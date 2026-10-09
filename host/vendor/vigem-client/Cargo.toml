@@ -1,0 +1,21 @@
+# Vendored from vigem-client 0.1.4 (MIT, see license.txt) for RCWLP.
+# Local changes: DS4 extended reports (gyro/accel/touch) via DualShock4Wired::update_ex,
+# and DS4 rumble notifications via DualShock4Wired::request_notification.
+[package]
+name = "vigem-client"
+version = "0.1.4"
+authors = ["Casper <CasualX@users.noreply.github.com>"]
+edition = "2018"
+license = "MIT"
+description = "ViGEm client API in pure Rust."
+repository = "https://github.com/CasualX/vigem-client"
+readme = "readme.md"
+
+[features]
+# Include the DS4Target target
+unstable_ds4 = []
+# Include the XTarget notification API
+unstable_xtarget_notification = []
+
+[dependencies]
+winapi = { version = "0.3", features = ["std", "handleapi", "setupapi", "fileapi", "winbase", "ioapiset", "synchapi", "errhandlingapi", "xinput", "winerror"] }

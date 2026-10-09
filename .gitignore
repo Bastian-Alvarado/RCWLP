@@ -1,0 +1,13 @@
+# Rust
+target/
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/local.properties
+android/.idea/
+android/.kotlin/
+*.iml
+*.apk

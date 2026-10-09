@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RCWLP</string>
+    <string name="scan">Scan again</string>
+    <string name="add_by_ip">Add PC by IP</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="ps4_mode">PS4 controller mode (gyro aiming)</string>
+    <string name="ps4_mode_hint">Appears on the PC as a DualShock 4 and sends the phone\'s motion sensors. Set up gyro aiming in Steam Input. Leave off for an Xbox 360 controller.</string>
+    <string name="background_mode">Keep working when locked or in other apps</string>
+    <string name="background_off">Off: the controller only works while RCWLP is on screen.</string>
+    <string name="background_not_installed">Needs the free Shizuku app, which lets RCWLP read the controller directly.</string>
+    <string name="background_not_running">Shizuku isn\'t running. Open it and start it with Wireless debugging. This is needed again after each reboot.</string>
+    <string name="background_no_permission">Allow RCWLP in Shizuku to finish setting up.</string>
+    <string name="background_ready">Ready. While connected, the controller only talks to the PC. The phone ignores it, even locked or in other apps.</string>
+    <string name="get_shizuku">Get Shizuku</string>
+    <string name="open_shizuku">Open Shizuku</string>
+    <string name="allow_shizuku">Allow in Shizuku</string>
+    <string name="background_hint">You can lock the phone or switch apps. The controller keeps working.\nDisconnect here or from the notification.</string>
+    <string name="ps4_mode_no_gyro">This phone has no gyroscope, so PS4 mode can\'t do gyro aiming.</string>
+    <string name="controller_hint">The screen dims after 10 seconds. Tap to wake it.\nAll controller buttons go to the PC.</string>
+</resources>
