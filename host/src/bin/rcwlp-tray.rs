@@ -1,0 +1,335 @@
+//! RCWLP host as a tray app: the same server as the console host, with an icon in the
+//! notification area, a log window, a pairing dialog and "Start with Windows".
+
+#![windows_subsystem = "windows"]
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+
+use native_windows_gui as nwg;
+use rcwlp_host::autostart;
+use rcwlp_host::platform::{self, Config};
+use rcwlp_host::protocol;
+use rcwlp_host::server::{self, Out};
+
+const ICON: &[u8] = include_bytes!("../../assets/tray.png");
+
+/// Everything the server said since the window last looked, plus how the server ended.
+#[derive(Default)]
+struct Inbox {
+    out: Vec<Out>,
+    finished: Option<Result<(), String>>,
+}
+
+struct Tray {
+    owner: nwg::MessageWindow,
+    icon: nwg::Icon,
+    tray: nwg::TrayNotification,
+    menu: nwg::Menu,
+    menu_show: nwg::MenuItem,
+    menu_autostart: nwg::MenuItem,
+    menu_quit: nwg::MenuItem,
+    notice: nwg::Notice,
+
+    log_window: nwg::Window,
+    log: nwg::TextBox,
+    command: nwg::TextInput,
+    run: nwg::Button,
+
+    pair_window: nwg::Window,
+    pair_label: nwg::Label,
+    pair_code: nwg::TextInput,
+    pair_accept: nwg::Button,
+    pair_reject: nwg::Button,
+
+    commands: Sender<String>,
+    inbox: Arc<Mutex<Inbox>>,
+    server: RefCell<Option<JoinHandle<()>>>,
+}
+
+fn main() {
+    nwg::init().expect("start the Windows UI");
+    let _ = nwg::Font::set_global_family("Segoe UI");
+    let verbose = std::env::args().any(|a| a == "--verbose" || a == "-v");
+    let port = port_arg().unwrap_or(protocol::DEFAULT_PORT);
+
+    let (commands, command_rx) = mpsc::channel();
+    let inbox = Arc::new(Mutex::new(Inbox::default()));
+    let tray = Rc::new(build(commands, inbox.clone()).expect("build the tray UI"));
+
+    let sender = tray.notice.sender();
+    let out_inbox = inbox.clone();
+    let out = Box::new(move |o: Out| {
+        out_inbox.lock().unwrap().out.push(o);
+        sender.notice();
+    });
+    let done_sender = tray.notice.sender();
+    let done_inbox = inbox;
+    let server = thread::spawn(move || {
+        let result = platform::run(Config { port, verbose }, out, command_rx);
+        done_inbox.lock().unwrap().finished = Some(result);
+        done_sender.notice();
+    });
+    *tray.server.borrow_mut() = Some(server);
+
+    let handlers: Vec<_> = [tray.owner.handle, tray.log_window.handle, tray.pair_window.handle]
+        .into_iter()
+        .map(|window| {
+            let tray = Rc::downgrade(&tray);
+            nwg::full_bind_event_handler(&window, move |event, data, handle| {
+                if let Some(tray) = tray.upgrade() {
+                    tray.on_event(event, &data, handle);
+                }
+            })
+        })
+        .collect();
+    nwg::dispatch_thread_events();
+    handlers.iter().for_each(nwg::unbind_event_handler);
+}
+
+fn port_arg() -> Option<u16> {
+    let args: Vec<String> = std::env::args().collect();
+    let i = args.iter().position(|a| a == "--port")?;
+    args.get(i + 1)?.parse().ok()
+}
+
+fn build(commands: Sender<String>, inbox: Arc<Mutex<Inbox>>) -> Result<Tray, nwg::NwgError> {
+    let mut t = Tray {
+        owner: Default::default(),
+        icon: Default::default(),
+        tray: Default::default(),
+        menu: Default::default(),
+        menu_show: Default::default(),
+        menu_autostart: Default::default(),
+        menu_quit: Default::default(),
+        notice: Default::default(),
+        log_window: Default::default(),
+        log: Default::default(),
+        command: Default::default(),
+        run: Default::default(),
+        pair_window: Default::default(),
+        pair_label: Default::default(),
+        pair_code: Default::default(),
+        pair_accept: Default::default(),
+        pair_reject: Default::default(),
+        commands,
+        inbox,
+        server: RefCell::new(None),
+    };
+
+    nwg::MessageWindow::builder().build(&mut t.owner)?;
+    nwg::Icon::builder().source_bin(Some(ICON)).size(Some((32, 32))).build(&mut t.icon)?;
+    nwg::TrayNotification::builder()
+        .parent(&t.owner)
+        .icon(Some(&t.icon))
+        .tip(Some("RCWLP host: starting"))
+        .build(&mut t.tray)?;
+    nwg::Menu::builder().popup(true).parent(&t.owner).build(&mut t.menu)?;
+    nwg::MenuItem::builder().text("Show log").parent(&t.menu).build(&mut t.menu_show)?;
+    nwg::MenuItem::builder()
+        .text("Start with Windows")
+        .check(autostart::RCWLP.get().is_some())
+        .parent(&t.menu)
+        .build(&mut t.menu_autostart)?;
+    nwg::MenuItem::builder().text("Quit").parent(&t.menu).build(&mut t.menu_quit)?;
+    nwg::Notice::builder().parent(&t.owner).build(&mut t.notice)?;
+
+    let (w, h) = (640, 400);
+    nwg::Window::builder()
+        .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::MINIMIZE_BOX)
+        .size((w, h))
+        .position(centered(w, h))
+        .title("RCWLP host")
+        .icon(Some(&t.icon))
+        .build(&mut t.log_window)?;
+    nwg::TextBox::builder()
+        .parent(&t.log_window)
+        .position((8, 8))
+        .size((w - 16, h - 56))
+        .readonly(true)
+        .flags(nwg::TextBoxFlags::VISIBLE | nwg::TextBoxFlags::VSCROLL | nwg::TextBoxFlags::AUTOVSCROLL)
+        .build(&mut t.log)?;
+    nwg::TextInput::builder()
+        .parent(&t.log_window)
+        .position((8, h - 40))
+        .size((w - 104, 28))
+        .placeholder_text(Some("list, forget <n>, or a pairing code"))
+        .build(&mut t.command)?;
+    nwg::Button::builder()
+        .parent(&t.log_window)
+        .text("Run")
+        .position((w - 88, h - 41))
+        .size((80, 30))
+        .build(&mut t.run)?;
+
+    let (w, h) = (380, 170);
+    nwg::Window::builder()
+        .flags(nwg::WindowFlags::WINDOW)
+        .size((w, h))
+        .position(centered(w, h))
+        .title("Pair a phone")
+        .icon(Some(&t.icon))
+        .topmost(true)
+        .build(&mut t.pair_window)?;
+    nwg::Label::builder().parent(&t.pair_window).position((16, 12)).size((w - 32, 52)).build(&mut t.pair_label)?;
+    nwg::TextInput::builder()
+        .parent(&t.pair_window)
+        .position((16, 72))
+        .size((140, 30))
+        .limit(7)
+        .placeholder_text(Some("123 456"))
+        .build(&mut t.pair_code)?;
+    nwg::Button::builder().parent(&t.pair_window).text("Accept").position((w - 196, 116)).size((84, 32)).build(&mut t.pair_accept)?;
+    nwg::Button::builder().parent(&t.pair_window).text("Reject").position((w - 104, 116)).size((84, 32)).build(&mut t.pair_reject)?;
+    Ok(t)
+}
+
+fn centered(w: i32, h: i32) -> (i32, i32) {
+    ((nwg::Monitor::width() - w) / 2, (nwg::Monitor::height() - h) / 2)
+}
+
+impl Tray {
+    fn on_event(&self, event: nwg::Event, data: &nwg::EventData, handle: nwg::ControlHandle) {
+        use nwg::Event as E;
+        match event {
+            E::OnNotice if handle == self.notice => self.drain(),
+            E::OnContextMenu if handle == self.tray => {
+                let (x, y) = nwg::GlobalCursor::position();
+                self.menu.popup(x, y);
+            }
+            E::OnMousePress(nwg::MousePressEvent::MousePressLeftUp) if handle == self.tray => self.show_log(),
+            E::OnMenuItemSelected if handle == self.menu_show => self.show_log(),
+            E::OnMenuItemSelected if handle == self.menu_autostart => self.toggle_autostart(),
+            E::OnMenuItemSelected if handle == self.menu_quit => self.quit(),
+            E::OnButtonClick if handle == self.run => self.run_command(),
+            E::OnKeyEnter if handle == self.command => self.run_command(),
+            E::OnButtonClick if handle == self.pair_accept => self.accept(),
+            E::OnKeyEnter if handle == self.pair_code => self.accept(),
+            E::OnButtonClick if handle == self.pair_reject => {
+                let _ = self.commands.send("n".into());
+            }
+            // Closing a window only hides it; the host keeps running in the tray.
+            E::OnWindowClose if handle == self.log_window || handle == self.pair_window => {
+                if let nwg::EventData::OnWindowClose(close) = data {
+                    close.close(false);
+                }
+                if handle == self.log_window {
+                    self.log_window.set_visible(false);
+                } else {
+                    // Closing the pairing dialog rejects, as the console's n does.
+                    let _ = self.commands.send("n".into());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn drain(&self) {
+        let (out, finished) = {
+            let mut inbox = self.inbox.lock().unwrap();
+            (std::mem::take(&mut inbox.out), inbox.finished.take())
+        };
+        for o in out {
+            match o {
+                Out::Event(s) => self.log.appendln(&format!("{} {s}", rcwlp_host::clock::stamp())),
+                Out::Debug(s) => self.log.appendln(&format!("{} [verbose] {s}", rcwlp_host::clock::stamp())),
+                Out::Reply(s) => {
+                    self.log.appendln(&s);
+                    // A wrong code typed in the pairing dialog is answered here.
+                    if self.pair_window.visible() {
+                        self.pair_label.set_text(&s);
+                    }
+                }
+                Out::Pairing(Some(name)) => self.ask_for_code(&name),
+                Out::Pairing(None) => self.pair_window.set_visible(false),
+                Out::Connected(list) => self.show_connected(&list),
+            }
+        }
+        if let Some(result) = finished {
+            if let Err(e) = result {
+                nwg::modal_error_message(&self.owner, "RCWLP host", &e);
+            }
+            nwg::stop_thread_dispatch();
+        }
+    }
+
+    fn ask_for_code(&self, name: &str) {
+        self.pair_label.set_text(&format!(
+            "\"{name}\" wants to pair. Type the 6-digit code shown on the phone to accept it."
+        ));
+        self.pair_code.set_text("");
+        self.pair_window.set_visible(true);
+        self.pair_code.set_focus();
+        self.tray.show(
+            &format!("\"{name}\" wants to pair. Type the code shown on the phone."),
+            Some("RCWLP pairing request"),
+            Some(nwg::TrayNotificationFlags::USER_ICON | nwg::TrayNotificationFlags::LARGE_ICON),
+            Some(&self.icon),
+        );
+    }
+
+    fn accept(&self) {
+        let code = self.pair_code.text();
+        if server::parse_code(&code).is_none() {
+            self.pair_label.set_text("Type the 6 digits the phone shows, like 123 456.");
+            return;
+        }
+        let _ = self.commands.send(code);
+    }
+
+    fn show_connected(&self, list: &[String]) {
+        let tip = match list.len() {
+            0 => "RCWLP host: no phone connected".to_string(),
+            1 => format!("RCWLP host: {}", list[0]),
+            n => format!("RCWLP host: {n} controllers connected"),
+        };
+        // Tooltips are limited to 127 characters.
+        self.tray.set_tip(&tip.chars().take(127).collect::<String>());
+    }
+
+    fn show_log(&self) {
+        self.log_window.set_visible(true);
+        self.log_window.set_focus();
+    }
+
+    fn run_command(&self) {
+        let line = self.command.text();
+        if line.trim().is_empty() {
+            return;
+        }
+        self.log.appendln(&format!("> {line}"));
+        self.command.set_text("");
+        if line.trim() == "quit" || line.trim() == "exit" {
+            return self.quit();
+        }
+        let _ = self.commands.send(line);
+    }
+
+    fn toggle_autostart(&self) {
+        let on = autostart::RCWLP.get().is_some();
+        let result = if on {
+            autostart::RCWLP.remove()
+        } else {
+            std::env::current_exe().and_then(|exe| autostart::RCWLP.set(&autostart::command_for(&exe)))
+        };
+        match result {
+            Ok(()) => self.menu_autostart.set_checked(!on),
+            Err(e) => {
+                nwg::modal_error_message(&self.owner, "RCWLP host", &format!("Couldn't change Start with Windows: {e}"));
+            }
+        }
+    }
+
+    fn quit(&self) {
+        let _ = self.commands.send("quit".into());
+        // The server unplugs its virtual controllers on the way out.
+        if let Some(server) = self.server.borrow_mut().take() {
+            let _ = server.join();
+        }
+        self.tray.set_visibility(false);
+        nwg::stop_thread_dispatch();
+    }
+}

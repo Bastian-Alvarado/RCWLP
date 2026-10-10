@@ -2,13 +2,15 @@
 name = "rcwlp-host"
 version = "0.2.0"
 edition = "2024"
+default-run = "rcwlp-host"
 
 [dependencies]
 hmac = "0.12"
+native-windows-gui = { version = "1.0.13", default-features = false, features = ["tray-notification", "message-window", "menu", "notice", "textbox", "image-decoder", "cursor"] }
 p256 = { version = "0.13", features = ["ecdh"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 vigem-client = { path = "vendor/vigem-client", features = ["unstable_xtarget_notification", "unstable_ds4"] }
-winapi = { version = "0.3", features = ["minwinbase", "sysinfoapi"] }
+winapi = { version = "0.3", features = ["minwinbase", "sysinfoapi", "winreg", "winerror"] }

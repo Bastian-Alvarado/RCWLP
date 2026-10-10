@@ -25,15 +25,22 @@ back the other way. The phone screen stays black and dims itself to save battery
 
 1. Install the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases), if it
    isn't installed already. Sunshine installs it too.
-2. Build and run the host:
+2. Build and run the host, either in the system tray or in a console window:
    ```bash
    cd host
-   cargo run --release
+   cargo run --release --bin rcwlp-tray
    ```
+   ```bash
+   cargo run --release --bin rcwlp-host
+   ```
+   Both are the same host. The tray app sits in the notification area: when a phone asks
+   to pair, a small window asks for the code; left-click the icon for the log (where the
+   console commands below also work); right-click for *Start with Windows* and *Quit*.
+   The built programs are in `host/target/release/`.
 3. The first time, Windows Firewall asks about network access. Allow it on **private**
    networks. Without that, the phone can't find the PC.
 
-Host commands, typed in its window:
+Host commands, typed in the console window (or the tray app's log window):
 
 | command | does |
 |---|---|

@@ -4,6 +4,7 @@
 //! [`server`] holds the protocol logic and [`platform`] runs it on a real UDP socket and the
 //! ViGEmBus driver. The console host (`main.rs`) and the tray app share both.
 
+pub mod autostart;
 pub mod clock;
 pub mod crypto;
 pub mod pad;
