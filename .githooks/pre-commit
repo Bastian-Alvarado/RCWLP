@@ -1,0 +1,40 @@
+#!/bin/sh
+# Runs the tests that cover what's being committed, so a protocol change can't land on one
+# side only. Turn it on once per clone:   git config core.hooksPath .githooks
+# It tests the working tree, so stage everything you changed. Skip once with --no-verify.
+
+root=$(git rev-parse --show-toplevel)
+staged=$(git diff --cached --name-only)
+changed() { printf '%s\n' "$staged" | grep -qE "$1"; }
+
+if changed '^(host/|protocol-vectors\.txt)'; then
+    echo "pre-commit: host tests"
+    if ! (cd "$root/host" && cargo test -q >/dev/null 2>"$root/.git/pre-commit-host.log"); then
+        cat "$root/.git/pre-commit-host.log" | tail -40
+        (cd "$root/host" && cargo test -q 2>&1 | grep -E "FAILED|panicked|error" | head -20)
+        echo "pre-commit: host tests failed; not committing."
+        exit 1
+    fi
+fi
+
+if changed '^(android/|protocol-vectors\.txt)'; then
+    echo "pre-commit: Android unit tests"
+    if [ -z "${JAVA_HOME:-}" ]; then
+        # Android's Gradle plugin wants JDK 17; use one installed by Android Studio if there is one.
+        for jdk in "$HOME"/.jdks/jbr-17* "$HOME"/.jdks/*-17*; do
+            if [ -x "$jdk/bin/java" ] || [ -x "$jdk/bin/java.exe" ]; then export JAVA_HOME="$jdk"; break; fi
+        done
+    fi
+    out=$(cd "$root/android" && sh ./gradlew testDebugUnitTest -q --console=plain 2>&1)
+    if [ $? -ne 0 ]; then
+        if printf '%s' "$out" | grep -qiE "loopback connection|JAVA_HOME|Unable to start the daemon|Could not connect to the Gradle daemon"; then
+            echo "pre-commit: Gradle couldn't start here, so the Android tests were skipped:"
+            printf '%s\n' "$out" | grep -iE "loopback|JAVA_HOME|daemon" | head -3
+        else
+            printf '%s\n' "$out" | tail -40
+            echo "pre-commit: Android tests failed; not committing."
+            exit 1
+        fi
+    fi
+fi
+exit 0

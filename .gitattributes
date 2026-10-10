@@ -1,3 +1,4 @@
 # The Gradle wrapper script must keep LF endings to run on Linux, macOS and WSL.
 android/gradlew text eol=lf
 *.bat text eol=crlf
+.githooks/* text eol=lf

@@ -113,3 +113,14 @@ foreground mode. If the app stops, the process exits and the phone gets the cont
 - **ViGEmBus** is no longer developed upstream, but it still works and is what Sunshine
   uses. `host/vendor/vigem-client` is a copy of the `vigem-client` crate (MIT), extended
   with DS4 motion reports and DS4 rumble, which the published crate lacks.
+
+## Development
+
+- `cd host && cargo test` runs the host's tests: pairing, sessions and timeouts against a fake
+  network and clock (`host/src/server/tests.rs`), plus the shared protocol test vectors.
+- `cd android && ./gradlew testDebugUnitTest` runs the app's unit tests, including the same
+  vectors (`protocol-vectors.txt`). If both pass, the PC and the phone agree on every byte.
+- `cargo run --example fake_phone` plays the phone against a running host;
+  `--discover` lists the hosts on the network and the protocol version each speaks.
+- Turn on the pre-commit hook once per clone with `git config core.hooksPath .githooks`. It
+  runs whichever of the two test suites the staged files affect.
