@@ -7,9 +7,16 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.SocketTimeoutException
+import java.util.concurrent.ConcurrentHashMap
 
 /** Finds RCWLP hosts on the local network. Blocking; call off the main thread. */
 object Discovery {
+    /**
+     * Every host that answered since the app started, by id. Replies aren't authenticated, so
+     * this is only a hint: [ControllerSession] tries the address and saves it once the host proves itself.
+     */
+    val lastSeen = ConcurrentHashMap<String, FoundHost>()
+
     /** Broadcasts on every interface and also asks known hosts directly, in case broadcast is blocked. */
     fun scan(known: List<PairedHost>, timeoutMs: Long = 1500): List<FoundHost> =
         query(broadcastTargets() + known.mapNotNull { resolve(it.address, it.port) }, timeoutMs)
@@ -46,7 +53,7 @@ object Discovery {
                 val id = r.bytes(Proto.ID_LEN)?.toHex() ?: continue
                 val name = r.string() ?: continue
                 val address = incoming.address.hostAddress ?: continue
-                found.getOrPut(id) { FoundHost(id, name, address, incoming.port) }
+                found.getOrPut(id) { FoundHost(id, name, address, incoming.port).also { lastSeen[id] = it } }
             }
         }
         return found.values.toList()

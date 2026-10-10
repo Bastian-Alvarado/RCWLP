@@ -59,6 +59,9 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                     // For the "connected" notification that keeps background mode running.
                     requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
                 }
+                // A background connection left running would keep the controller grabbed and
+                // fight the on-screen one for the PC.
+                if (!checked) ControllerService.stop(this@MainActivity)
                 updateBackgroundStatus()
             }
         }
@@ -148,21 +151,10 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                 scanning = false
                 if (isDestroyed) return@runOnUiThread
                 found = result
-                rememberNewAddresses(result)
                 scanStatus.text = if (result.isEmpty()) {
                     "No PCs found. Make sure rcwlp-host is running on the PC and both are on the same network, or add the PC by IP."
                 } else ""
                 render()
-            }
-        }
-    }
-
-    /** Keeps paired hosts reachable when the PC's IP address changes. */
-    private fun rememberNewAddresses(result: List<FoundHost>) {
-        for (f in result) {
-            val p = store.find(f.idHex) ?: continue
-            if (p.address != f.address || p.port != f.port || p.name != f.name) {
-                store.save(PairedHost(p.idHex, f.name, p.key, f.address, f.port))
             }
         }
     }
@@ -216,7 +208,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             val result = pairing.run { code ->
                 runOnUiThread {
                     dialog.setMessage(
-                        "Code: %03d %03d\n\nCheck that the RCWLP host window on your PC shows the same code, then type y there to accept."
+                        "Code: %03d %03d\n\nType this code in the RCWLP host window on your PC to finish pairing."
                             .format(code / 1000, code % 1000),
                     )
                 }
@@ -230,7 +222,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                         startController(result.host)
                     }
                     Pairing.Result.Rejected -> toast("The PC rejected the pairing.")
-                    Pairing.Result.TimedOut -> toast("Pairing timed out. Accept it on the PC within a minute.")
+                    Pairing.Result.TimedOut -> toast("Pairing timed out. Type the code on the PC within a minute.")
                     Pairing.Result.Cancelled -> {}
                     is Pairing.Result.Failed -> toast("Pairing failed: ${result.message}")
                 }
@@ -268,7 +260,6 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                     return@runOnUiThread
                 }
                 found = found.filter { it.idHex != host.idHex } + host
-                rememberNewAddresses(listOf(host))
                 render()
                 store.find(host.idHex)?.let(::startController) ?: startPairing(host)
             }

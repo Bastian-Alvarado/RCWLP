@@ -42,6 +42,14 @@ class HostStore(context: Context) {
     @Synchronized
     fun remove(idHex: String) = write(hosts().filter { it.idHex != idHex })
 
+    /** Records where a paired host turned out to be. Does nothing if it was forgotten meanwhile. */
+    @Synchronized
+    fun updateAddress(idHex: String, address: String, port: Int, name: String) {
+        val hosts = hosts()
+        if (hosts.none { it.idHex == idHex }) return
+        write(hosts.map { if (it.idHex == idHex) PairedHost(it.idHex, name, it.key, address, port) else it })
+    }
+
     private fun write(hosts: List<PairedHost>) {
         val arr = JSONArray()
         hosts.forEach {

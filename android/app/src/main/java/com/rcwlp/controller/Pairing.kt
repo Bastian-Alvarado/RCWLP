@@ -8,8 +8,9 @@ import java.net.SocketTimeoutException
 import java.security.MessageDigest
 
 /**
- * Pairs this phone with a host. Both sides run ECDH and show a code derived from the
- * resulting key; the user accepts on the PC once the codes match. Blocking; run off the main thread.
+ * Pairs this phone with a host. Both sides run ECDH and derive a code from the resulting key;
+ * the phone shows it and the user types it on the PC, which accepts only if its own code matches.
+ * Blocking; run off the main thread.
  */
 class Pairing(private val store: HostStore, private val host: FoundHost, private val deviceName: String) {
     sealed interface Result {
@@ -33,11 +34,9 @@ class Pairing(private val store: HostStore, private val host: FoundHost, private
         val key = Crypto.EphemeralKey()
         val clientId = store.clientId
         val hostAddress = InetAddress.getByName(host.address)
-        val hello = PacketWriter(Proto.PAIR_HELLO)
-            .bytes(clientId)
-            .bytes(key.publicBytes)
-            .string(deviceName)
-            .finish()
+        // The hello only commits to our key; we reveal it after the host has sent its own.
+        val hello = Packets.pairHello(clientId, key.publicBytes, deviceName)
+        val reveal = Packets.pairReveal(clientId, key.publicBytes)
         var pairKey: ByteArray? = null
 
         DatagramSocket().use { socket ->
@@ -45,14 +44,16 @@ class Pairing(private val store: HostStore, private val host: FoundHost, private
             val buf = ByteArray(512)
             val incoming = DatagramPacket(buf, buf.size)
             val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS
-            var nextHello = 0L
+            var nextSend = 0L
             while (!cancelled) {
                 val now = SystemClock.elapsedRealtime()
                 if (now > deadline) return Result.TimedOut
-                // The host answers every hello, so retrying covers lost packets in both directions.
-                if (now >= nextHello) {
-                    socket.send(DatagramPacket(hello, hello.size, hostAddress, host.port))
-                    nextHello = now + 1000
+                // Hello until the host's key arrives, then reveal until the result does. Retrying
+                // covers lost packets in both directions.
+                if (now >= nextSend) {
+                    val packet = if (pairKey == null) hello else reveal
+                    socket.send(DatagramPacket(packet, packet.size, hostAddress, host.port))
+                    nextSend = now + 1000
                 }
                 try {
                     socket.receive(incoming)
@@ -70,6 +71,7 @@ class Pairing(private val store: HostStore, private val host: FoundHost, private
                         val shared = runCatching { key.sharedSecret(hostPub) }.getOrNull() ?: continue
                         val k = Crypto.pairKey(shared, clientId, hostId, key.publicBytes, hostPub)
                         pairKey = k
+                        nextSend = 0 // Reveal right away.
                         onCode(Crypto.pairCode(k))
                     }
                     Proto.PAIR_RESULT -> {

@@ -2,7 +2,7 @@
 //! All integers are big-endian.
 
 pub const MAGIC: [u8; 4] = *b"RCWL";
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 3;
 pub const DEFAULT_PORT: u16 = 47391;
 pub const MAC_LEN: usize = 16;
 pub const PUB_LEN: usize = 65;
@@ -11,6 +11,8 @@ pub const MAX_NAME: usize = 64;
 pub type Id = [u8; 16];
 pub type Nonce = [u8; 16];
 pub type PubKey = [u8; PUB_LEN];
+/// SHA-256 of the phone's pairing key, sent before the key itself (see PROTOCOL.md).
+pub type Commitment = [u8; 32];
 
 pub mod kind {
     pub const DISCOVER: u8 = 0x01;
@@ -18,6 +20,7 @@ pub mod kind {
     pub const PAIR_HELLO: u8 = 0x10;
     pub const PAIR_CHALLENGE: u8 = 0x11;
     pub const PAIR_RESULT: u8 = 0x12;
+    pub const PAIR_REVEAL: u8 = 0x13;
     pub const CONNECT: u8 = 0x20;
     pub const WELCOME: u8 = 0x21;
     pub const CONNECT_REJECT: u8 = 0x22;

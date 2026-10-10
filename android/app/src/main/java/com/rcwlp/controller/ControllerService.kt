@@ -121,7 +121,7 @@ class ControllerService : Service(), ControllerSession.Listener {
         acquireLocks()
         ps4Mode = store.ps4Mode
         val padType = if (ps4Mode) Proto.PAD_DUALSHOCK4 else Proto.PAD_XBOX360
-        val s = ControllerSession(target, store.clientId, padType, this).also { it.start() }
+        val s = ControllerSession(store, target, padType, this).also { it.start() }
         session = s
         if (ps4Mode) motion = MotionSource(this, orientFromGravity = true) { s.update(it) }.also { it.start() }
         rumbler.device = GamepadMapper.connected().firstOrNull()
@@ -230,7 +230,9 @@ class ControllerService : Service(), ControllerSession.Listener {
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rcwlp:controller")
             .apply { acquire() }
         val wifi = applicationContext.getSystemService(WifiManager::class.java)
-        // Low latency only applies while the screen is on; high-perf keeps power saving off when it's not.
+        // Low latency only applies while the screen is on. High-perf keeps Wi-Fi power saving off
+        // when it's not, but it's deprecated since Android 14 and may do nothing there, so screen-off
+        // rumble can arrive later. Input isn't affected much: the phone sends at least every 50 ms.
         wifiLocks = listOfNotNull(
             if (Build.VERSION.SDK_INT >= 29) wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "rcwlp:low-latency") else null,
             wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "rcwlp:high-perf"),

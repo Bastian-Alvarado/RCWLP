@@ -1,17 +1,13 @@
 //! Virtual controllers backed by the ViGEmBus driver: Xbox 360, or DualShock 4 with motion.
 
-use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
 use vigem_client::{Client, DualShock4Wired, TargetId, XButtons, XGamepad, Xbox360Wired};
 
-use crate::protocol::{Id, PadKind, PadState};
+use crate::protocol::{PadKind, PadState};
 
 const ERROR_NO_MORE_ITEMS: u32 = 259;
-
-/// (client, large motor, small motor) sent from the driver's notification thread.
-pub type RumbleEvent = (Id, u8, u8);
 
 enum Target {
     Xbox360(Xbox360Wired<Client>),
@@ -28,25 +24,26 @@ pub struct Pad {
 }
 
 impl Pad {
-    pub fn plug(kind: PadKind, client_id: Id, rumble: Sender<RumbleEvent>) -> Result<Pad, vigem_client::Error> {
+    /// Plugs in a virtual controller. `on_rumble(large, small)` runs on the driver's
+    /// notification thread whenever a game changes the motors.
+    pub fn plug(kind: PadKind, mut on_rumble: impl FnMut(u8, u8) + Send + 'static) -> Result<Pad, vigem_client::Error> {
         match kind {
             PadKind::Xbox360 => {
                 let mut target = Xbox360Wired::new(Client::connect()?, TargetId::XBOX360_WIRED);
                 target.plugin()?;
                 target.wait_ready()?;
                 let player = target.get_user_index().map(|i| i as u8 + 1).unwrap_or(0);
-                let notifications = target.request_notification()?.spawn_thread(move |_, n| {
-                    let _ = rumble.send((client_id, n.large_motor, n.small_motor));
-                });
+                let notifications = target
+                    .request_notification()?
+                    .spawn_thread(move |_, n| on_rumble(n.large_motor, n.small_motor));
                 Ok(Pad { target: Target::Xbox360(target), _notifications: notifications, player, kind })
             }
             PadKind::DualShock4 => {
                 let mut target = DualShock4Wired::new(Client::connect()?, TargetId::DUALSHOCK4_WIRED);
                 target.plugin()?;
                 target.wait_ready()?;
-                let notifications = target.request_notification()?.spawn_thread(move |n| {
-                    let _ = rumble.send((client_id, n.large_motor, n.small_motor));
-                });
+                let notifications =
+                    target.request_notification()?.spawn_thread(move |n| on_rumble(n.large_motor, n.small_motor));
                 let target = Target::DualShock4 { target, started: Instant::now(), counter: 0 };
                 Ok(Pad { target, _notifications: notifications, player: 0, kind })
             }

@@ -1,13 +1,16 @@
 package com.rcwlp.controller
 
 import android.content.Context
+import android.os.FileObserver
 import android.os.RemoteException
 import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.annotation.Keep
 import java.io.File
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.math.max
@@ -15,7 +18,7 @@ import kotlin.system.exitProcess
 
 /**
  * Background mode's input reader. Shizuku runs this in a separate process with shell
- * privileges, which can open /dev/input. It grabs every attached controller, so the phone
+ * privileges, which can open /dev/input. It grabs every USB or Bluetooth controller, so the phone
  * ignores it even when locked or in another app, and reports the merged state to the app.
  * When the app unbinds (or dies) Shizuku calls [destroy] and the process exits, which also
  * releases the grab and gives the controller back to Android.
@@ -30,6 +33,17 @@ class EvdevService() : IEvdevService.Stub() {
     @Volatile private var callback: IEvdevCallback? = null
     @Volatile private var running = false
     private var lastSent: PadState? = null
+    private val rescan = ArrayBlockingQueue<Unit>(1)
+    /** Built-in gamepad-like devices already logged as skipped. Scan thread only. */
+    private val skipped = HashSet<String>()
+
+    /** Wakes the scan thread when a device appears. Kept in a field: a collected observer stops watching. */
+    @Suppress("DEPRECATION") // FileObserver(File, Int) needs API 29.
+    private val hotplug = object : FileObserver(INPUT_DIR, CREATE or ATTRIB or DELETE) {
+        override fun onEvent(event: Int, path: String?) {
+            rescan.offer(Unit)
+        }
+    }
 
     override fun destroy() {
         running = false
@@ -43,34 +57,45 @@ class EvdevService() : IEvdevService.Stub() {
         report()
         if (running) return
         running = true
+        runCatching { hotplug.startWatching() }.onFailure { Log.w(TAG, "Can't watch $INPUT_DIR; polling only", it) }
         thread(name = "evdev-scan", isDaemon = true) {
             while (running) {
                 runCatching { scan() }.onFailure { Log.w(TAG, "Scan failed", it) }
-                Thread.sleep(SCAN_INTERVAL_MS)
+                // Hotplug wakes us right away. The timeout is a fallback for missed changes, like a
+                // node that is still root-only when it appears and never gets an ATTRIB event.
+                if (rescan.poll(SCAN_INTERVAL_MS, TimeUnit.MILLISECONDS) != null) {
+                    Thread.sleep(SETTLE_MS) // A controller adds several nodes; scan once for all of them.
+                    rescan.clear()
+                }
             }
         }
     }
 
     /** Opens controllers that appeared since the last scan. */
     private fun scan() {
-        val paths = File("/dev/input").list().orEmpty()
+        val paths = File(INPUT_DIR).list().orEmpty()
             .filter { it.startsWith("event") }
-            .map { "/dev/input/$it" }
+            .map { "$INPUT_DIR/$it" }
             .filter { !pads.containsKey(it) }
         val found = paths.mapNotNull(::probe)
-        // Controllers often expose extra interfaces with the same IDs, like a "Consumer Control"
-        // device carrying the home button. Grab those too, or they'd still act on the phone.
-        val controllerIds = (pads.values.map { it.vidPid } + found.filter { it.isGamepad }.map { it.vidPid })
+        // Only USB and Bluetooth devices, so built-in buttons (gaming phones' shoulder triggers)
+        // and other apps' virtual gamepads keep working. Controllers often expose extra
+        // interfaces with the same IDs, like a "Consumer Control" device carrying the home
+        // button. Grab those too, or they'd still act on the phone.
+        val controllerIds = (pads.values.map { it.vidPid } + found.filter { it.isGamepad && it.isExternal }.map { it.vidPid })
             .filter { it != 0 }
             .toSet()
         var added = false
         for (dev in found) {
-            if (dev.isGamepad || (dev.isExternal && dev.vidPid in controllerIds)) {
+            if (dev.isExternal && (dev.isGamepad || dev.vidPid in controllerIds)) {
                 val pad = EvdevPad(dev)
                 pads[dev.path] = pad
                 thread(name = "evdev-${dev.path.substringAfterLast('/')}", isDaemon = true) { readLoop(pad) }
                 added = true
             } else {
+                if (dev.isGamepad && skipped.add("${dev.path} ${dev.name}")) {
+                    Log.i(TAG, "Leaving ${dev.name} alone: it isn't on USB or Bluetooth (bus ${dev.id[0]})")
+                }
                 Evdev.close(dev.fd)
             }
         }
@@ -151,7 +176,10 @@ class EvdevService() : IEvdevService.Stub() {
 
     private companion object {
         const val TAG = "RCWLP-evdev"
-        const val SCAN_INTERVAL_MS = 2000L
+        const val INPUT_DIR = "/dev/input"
+        /** Fallback when hotplug events are missed. */
+        const val SCAN_INTERVAL_MS = 5000L
+        const val SETTLE_MS = 250L
     }
 }
 

@@ -5,9 +5,11 @@ import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
@@ -17,10 +19,13 @@ import kotlin.concurrent.thread
  * The sender thread connects, then sends the full pad state on every change plus a heartbeat
  * every [HEARTBEAT_MS]. Each packet carries the whole state, so a lost packet costs nothing.
  * The receiver thread verifies the host's WELCOME and STATUS packets.
+ *
+ * The host is tried at its saved address and wherever discovery last saw it. Discovery replies
+ * aren't authenticated, so only the address that answers with a valid WELCOME is used and saved.
  */
 class ControllerSession(
+    private val store: HostStore,
     private val host: PairedHost,
-    private val clientId: ByteArray,
     /** [Proto.PAD_XBOX360] or [Proto.PAD_DUALSHOCK4]. */
     private val padType: Int,
     private val listener: Listener,
@@ -33,6 +38,7 @@ class ControllerSession(
         fun onRumble(large: Int, small: Int)
     }
 
+    private val clientId = store.clientId
     @Volatile private var running = false
     @Volatile private var pad = PadState()
     @Volatile private var motion = Motion()
@@ -40,13 +46,17 @@ class ControllerSession(
     /** Wakes the sender while it waits for WELCOME or CONNECT_REJECT. */
     private val connectSignal = ArrayBlockingQueue<Unit>(1)
     private val socket = DatagramSocket()
-    private lateinit var hostAddress: InetAddress
+    /** Addresses to try, saved one first. Set before the receiver starts. */
+    private var candidates: List<InetSocketAddress> = emptyList()
 
     // Set by the receiver, read by the sender.
     @Volatile private var cnonce = ByteArray(0)
+    /** The candidate that proved it's the host. Set before [sessionKey]. */
+    @Volatile private var hostAddress: InetSocketAddress? = null
     @Volatile private var sessionKey: ByteArray? = null
     @Volatile private var rejected = false
     @Volatile private var lastStatusAt = 0L
+    private val rejectedBy = ConcurrentHashMap.newKeySet<InetSocketAddress>()
 
     // Receiver thread only.
     private var lastStatusSeq = 0L
@@ -81,7 +91,10 @@ class ControllerSession(
 
     private fun sendLoop() {
         try {
-            hostAddress = InetAddress.getByName(host.address)
+            val seen = Discovery.lastSeen[host.idHex]
+            candidates = listOfNotNull(resolve(host.address, host.port), seen?.let { resolve(it.address, it.port) })
+                .distinct()
+            if (candidates.isEmpty()) return
             thread(name = "rcwlp-recv") { receiveLoop() }
             while (running && connect()) streamInput()
             sendDisconnect()
@@ -97,15 +110,17 @@ class ControllerSession(
     private fun connect(): Boolean {
         listener.onState(State.CONNECTING, 0)
         sessionKey = null
+        hostAddress = null
+        rejectedBy.clear()
         cnonce = Crypto.random(Proto.NONCE_LEN)
-        val packet = PacketWriter(Proto.CONNECT).bytes(clientId).bytes(cnonce).u8(padType).sign(host.key)
+        val packet = Packets.connect(clientId, cnonce, padType, host.key)
         while (running) {
             if (sessionKey != null) return true
             if (rejected) {
                 listener.onState(State.NOT_PAIRED, 0)
                 return false
             }
-            send(packet)
+            candidates.forEach { send(packet, it) }
             connectSignal.poll(CONNECT_RETRY_MS, TimeUnit.MILLISECONDS)
         }
         return false
@@ -113,24 +128,14 @@ class ControllerSession(
 
     private fun streamInput() {
         val key = sessionKey ?: return
+        val target = hostAddress ?: return
         val mac = Crypto.newMac(key)
         val buf = ByteBuffer.allocate(Proto.INPUT_BODY_LEN + Proto.MAC_LEN)
         seq = 0
         lastStatusAt = SystemClock.elapsedRealtime()
         while (running) {
-            val p = pad
-            val m = motion
             seq++
-            buf.clear()
-            buf.put(Proto.MAGIC).put(Proto.VERSION.toByte()).put(Proto.INPUT.toByte())
-                .put(clientId).putInt(seq)
-                .putShort(p.buttons.toShort()).put(p.leftTrigger.toByte()).put(p.rightTrigger.toByte())
-                .putShort(p.lx.toShort()).putShort(p.ly.toShort()).putShort(p.rx.toShort()).putShort(p.ry.toShort())
-                .putShort(m.gx.toShort()).putShort(m.gy.toShort()).putShort(m.gz.toShort())
-                .putShort(m.ax.toShort()).putShort(m.ay.toShort()).putShort(m.az.toShort())
-            mac.update(buf.array(), 0, Proto.INPUT_BODY_LEN)
-            buf.put(mac.doFinal(), 0, Proto.MAC_LEN)
-            send(buf.array())
+            send(Packets.input(buf, mac, clientId, seq, pad, motion), target)
             val sentAt = SystemClock.elapsedRealtime()
 
             if (sentAt - lastStatusAt > LOST_AFTER_MS) {
@@ -146,12 +151,13 @@ class ControllerSession(
 
     private fun sendDisconnect() {
         val key = sessionKey ?: return
-        val packet = PacketWriter(Proto.DISCONNECT).bytes(clientId).u32(seq + 1).sign(key)
-        repeat(3) { runCatching { send(packet) } }
+        val target = hostAddress ?: return
+        val packet = Packets.disconnect(clientId, seq + 1, key)
+        repeat(3) { runCatching { send(packet, target) } }
     }
 
-    private fun send(data: ByteArray) {
-        socket.send(DatagramPacket(data, data.size, hostAddress, host.port))
+    private fun send(data: ByteArray, to: InetSocketAddress) {
+        socket.send(DatagramPacket(data, data.size, to))
     }
 
     private fun receiveLoop() {
@@ -165,11 +171,12 @@ class ControllerSession(
             } catch (_: IOException) {
                 break
             }
-            if (incoming.address == hostAddress) handle(buf, incoming.length)
+            val from = incoming.socketAddress as? InetSocketAddress ?: continue
+            if (from in candidates) handle(buf, incoming.length, from)
         }
     }
 
-    private fun handle(buf: ByteArray, len: Int) {
+    private fun handle(buf: ByteArray, len: Int, from: InetSocketAddress) {
         when (PacketReader(buf, len).header()) {
             Proto.WELCOME -> {
                 if (sessionKey != null) return
@@ -181,17 +188,24 @@ class ControllerSession(
                 if (!Crypto.verify16(key, body, mac)) return
                 lastStatusSeq = 0
                 reportedPlayer = -1
+                hostAddress = from
                 sessionKey = key
                 connectSignal.offer(Unit)
+                remember(from)
             }
             Proto.CONNECT_REJECT -> {
-                // Unauthenticated, so only believed while we're still waiting to connect.
+                // Unauthenticated, so only believed while we're still waiting to connect, and
+                // only once every address we tried says so: an old one may now be another PC.
                 if (sessionKey == null) {
-                    rejected = true
-                    connectSignal.offer(Unit)
+                    rejectedBy += from
+                    if (rejectedBy.containsAll(candidates)) {
+                        rejected = true
+                        connectSignal.offer(Unit)
+                    }
                 }
             }
             Proto.STATUS -> {
+                if (from != hostAddress) return
                 val key = sessionKey ?: return
                 val (body, mac) = Proto.splitMac(buf, len) ?: return
                 if (!Crypto.verify16(key, body, mac)) return
@@ -212,6 +226,19 @@ class ControllerSession(
             }
         }
     }
+
+    /** Saves where the host is, now that it has proven itself at that address. */
+    private fun remember(at: InetSocketAddress) {
+        val ip = at.address.hostAddress ?: return
+        // Discovery's name for the host, if that reply came from this same address.
+        val name = Discovery.lastSeen[host.idHex]?.takeIf { it.address == ip && it.port == at.port }?.name ?: host.name
+        if (ip != host.address || at.port != host.port || name != host.name) {
+            store.updateAddress(host.idHex, ip, at.port, name)
+        }
+    }
+
+    private fun resolve(address: String, port: Int): InetSocketAddress? =
+        runCatching { InetSocketAddress(InetAddress.getByName(address), port) }.getOrNull()
 
     private companion object {
         const val HEARTBEAT_MS = 50L

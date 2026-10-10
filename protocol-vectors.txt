@@ -1,0 +1,47 @@
+# Test vectors for PROTOCOL.md. Both implementations check themselves against this file:
+#   host     cargo test                   (host/src/vectors.rs)
+#   android  ./gradlew testDebugUnitTest  (app/src/test/.../ProtocolVectorsTest.kt)
+# If both pass, they agree on every key and packet byte. Byte strings are hex, numbers decimal.
+
+# Inputs
+client_id = 00112233445566778899aabbccddeeff
+host_id = f0e1d2c3b4a5968778695a4b3c2d1e0f
+client_private = c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1
+host_private = 4848484848484848484848484848484848484848484848484848484848484848
+name = Test Phone
+cnonce = 0102030405060708090a0b0c0d0e0f10
+hnonce = a0a1a2a3a4a5a6a7a8a9aaabacadaeaf
+pad_type = 1
+seq = 7
+buttons = 4353
+left_trigger = 200
+right_trigger = 0
+lx = 32767
+ly = -32768
+rx = 1000
+ry = -1000
+gyro = -16 32 1600
+accel = 0 8192 -1
+status_seq = 3
+large_motor = 255
+small_motor = 128
+player = 2
+
+# Derived keys
+client_public = 04991498c2ef7f1ca5fd7f1d2ee033dc0aed84745da9b5ebb60a7d854307ebf9964a48ccf94fa5f206b0550e62aad49e4a0ec26dcb562201c4dd8bec6d11d39f44
+host_public = 0442a51e039eb9e0b5ce58c4f1b8ebcb281fae32b90729711640b0cad4fc5c38c1173c7e7b5be6ea94bb10e09fbee7c7b0838f3f4f88e01e911d30e44f4f3e9b32
+commitment = 6850866a1e149a23b844eb402c3c9eecc32a6d3d2aec3e0bbc1f8a34566bbb01
+pair_key = 1b55b9dd2bc975efe89edc066a14b4450d0252bf544240cd4a3d2cd8edb7387e
+pair_code = 83441
+pair_ok_mac = 52f836f87b137f30bd1211b58eef398b
+session_key = 0ea1d636bf9df6b64b32af1f700d578d894990d25a78be3db78739df28409a36
+
+# Packets: pair_result is an accepted pairing; welcome, input and status are signed with session_key
+pair_hello = 5243574c031000112233445566778899aabbccddeeff6850866a1e149a23b844eb402c3c9eecc32a6d3d2aec3e0bbc1f8a34566bbb010a546573742050686f6e65
+pair_challenge = 5243574c0311f0e1d2c3b4a5968778695a4b3c2d1e0f0442a51e039eb9e0b5ce58c4f1b8ebcb281fae32b90729711640b0cad4fc5c38c1173c7e7b5be6ea94bb10e09fbee7c7b0838f3f4f88e01e911d30e44f4f3e9b32
+pair_reveal = 5243574c031300112233445566778899aabbccddeeff04991498c2ef7f1ca5fd7f1d2ee033dc0aed84745da9b5ebb60a7d854307ebf9964a48ccf94fa5f206b0550e62aad49e4a0ec26dcb562201c4dd8bec6d11d39f44
+pair_result = 5243574c03120152f836f87b137f30bd1211b58eef398b
+connect = 5243574c032000112233445566778899aabbccddeeff0102030405060708090a0b0c0d0e0f10015b9cdc47f6f95e2db38458e498928312
+welcome = 5243574c0321a0a1a2a3a4a5a6a7a8a9aaabacadaeaf2dc22daa27fc18a48b83374f30a98994
+input = 5243574c033000112233445566778899aabbccddeeff000000071101c8007fff800003e8fc18fff00020064000002000ffffd7fbad097ed83cc1f6bb1205a7c06670
+status = 5243574c033100000003ff8002eb8be66b43bf25fb7b9dc356c5e5acb9

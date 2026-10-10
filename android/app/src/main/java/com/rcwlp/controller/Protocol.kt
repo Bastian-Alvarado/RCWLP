@@ -2,11 +2,12 @@ package com.rcwlp.controller
 
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
+import javax.crypto.Mac
 
 /** Wire format shared with the PC host. See PROTOCOL.md at the repo root. All integers are big-endian. */
 object Proto {
     val MAGIC = "RCWL".toByteArray(Charsets.US_ASCII)
-    const val VERSION = 2
+    const val VERSION = 3
     const val DEFAULT_PORT = 47391
     const val MAC_LEN = 16
     const val PUB_LEN = 65
@@ -19,6 +20,7 @@ object Proto {
     const val PAIR_HELLO = 0x10
     const val PAIR_CHALLENGE = 0x11
     const val PAIR_RESULT = 0x12
+    const val PAIR_REVEAL = 0x13
     const val CONNECT = 0x20
     const val WELCOME = 0x21
     const val CONNECT_REJECT = 0x22
@@ -37,6 +39,37 @@ object Proto {
     fun splitMac(buf: ByteArray, len: Int): Pair<ByteArray, ByteArray>? =
         if (len <= MAC_LEN) null
         else buf.copyOfRange(0, len - MAC_LEN) to buf.copyOfRange(len - MAC_LEN, len)
+}
+
+/** The packets the phone sends, in one place so the protocol test vectors check what the app really sends. */
+object Packets {
+    /** Pairing step 1: commits to [publicKey] without revealing it (see [Crypto.commitment]). */
+    fun pairHello(clientId: ByteArray, publicKey: ByteArray, name: String): ByteArray =
+        PacketWriter(Proto.PAIR_HELLO).bytes(clientId).bytes(Crypto.commitment(publicKey)).string(name).finish()
+
+    /** Pairing step 2, sent once the host's key has arrived. */
+    fun pairReveal(clientId: ByteArray, publicKey: ByteArray): ByteArray =
+        PacketWriter(Proto.PAIR_REVEAL).bytes(clientId).bytes(publicKey).finish()
+
+    fun connect(clientId: ByteArray, cnonce: ByteArray, padType: Int, pairKey: ByteArray): ByteArray =
+        PacketWriter(Proto.CONNECT).bytes(clientId).bytes(cnonce).u8(padType).sign(pairKey)
+
+    /** A signed INPUT packet, written into [buf] (INPUT_BODY_LEN + MAC_LEN bytes) to avoid allocating per packet. */
+    fun input(buf: ByteBuffer, mac: Mac, clientId: ByteArray, seq: Int, p: PadState, m: Motion): ByteArray {
+        buf.clear()
+        buf.put(Proto.MAGIC).put(Proto.VERSION.toByte()).put(Proto.INPUT.toByte())
+            .put(clientId).putInt(seq)
+            .putShort(p.buttons.toShort()).put(p.leftTrigger.toByte()).put(p.rightTrigger.toByte())
+            .putShort(p.lx.toShort()).putShort(p.ly.toShort()).putShort(p.rx.toShort()).putShort(p.ry.toShort())
+            .putShort(m.gx.toShort()).putShort(m.gy.toShort()).putShort(m.gz.toShort())
+            .putShort(m.ax.toShort()).putShort(m.ay.toShort()).putShort(m.az.toShort())
+        mac.update(buf.array(), 0, Proto.INPUT_BODY_LEN)
+        buf.put(mac.doFinal(), 0, Proto.MAC_LEN)
+        return buf.array()
+    }
+
+    fun disconnect(clientId: ByteArray, seq: Int, sessionKey: ByteArray): ByteArray =
+        PacketWriter(Proto.DISCONNECT).bytes(clientId).u32(seq).sign(sessionKey)
 }
 
 class PacketWriter(kind: Int) {

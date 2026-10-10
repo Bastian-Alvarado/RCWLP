@@ -73,12 +73,15 @@ class ControllerActivity : Activity(), ControllerSession.Listener, InputManager.
             wake()
             return
         }
+        // A background-mode connection still running would grab the controller away from this
+        // screen and fight this session for the PC.
+        ControllerService.stop(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         findViewById<TextView>(R.id.hint).setText(R.string.controller_hint)
         mapper.reset()
         ps4Mode = store.ps4Mode
         val padType = if (ps4Mode) Proto.PAD_DUALSHOCK4 else Proto.PAD_XBOX360
-        val s = ControllerSession(host, store.clientId, padType, this).also { it.start() }
+        val s = ControllerSession(store, host, padType, this).also { it.start() }
         session = s
         if (ps4Mode) {
             motion = MotionSource(this) { s.update(it) }.also {

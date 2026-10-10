@@ -3,6 +3,10 @@ plugins {
     id("com.android.application")
 }
 
+// Wire-format test vectors shared with the PC host, at the repo root.
+val protocolVectors = rootProject.file("../protocol-vectors.txt")
+
+
 android {
     namespace = "com.rcwlp.controller"
     compileSdk = 36
@@ -43,6 +47,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    testOptions {
+        unitTests.all {
+            it.systemProperty("rcwlp.vectors", protocolVectors.absolutePath)
+            it.inputs.file(protocolVectors)
+        }
+    }
 }
 
 dependencies {
@@ -50,4 +61,6 @@ dependencies {
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     implementation("androidx.annotation:annotation:1.9.1")
+
+    testImplementation("junit:junit:4.13.2")
 }

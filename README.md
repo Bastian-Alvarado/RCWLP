@@ -4,7 +4,7 @@ Use an Android phone with a clip-on controller (Backbone, Kishi, GameSir, an Xbo
 DualSense pad over Bluetooth, ...) as a regular Xbox 360 controller on your Windows PC.
 
 Unlike Moonlight, nothing is streamed: the PC doesn't capture or encode anything. Only
-controller input travels over the network, in packets of about 54 bytes, and rumble comes
+controller input travels over the network, in packets of 66 bytes, and rumble comes
 back the other way. The phone screen stays black and dims itself to save battery.
 
 ```
@@ -37,7 +37,8 @@ Host commands, typed in its window:
 
 | command | does |
 |---|---|
-| `y` / `n` | accept / reject a pairing request |
+| the phone's 6-digit code | accept a pairing request (`123456` or `123 456`) |
+| `n` | reject a pairing request |
 | `list` | show paired phones and who is connected |
 | `forget <n>` | unpair phone number `n` |
 | `quit` | unplug all virtual controllers and exit |
@@ -61,7 +62,8 @@ Then install `android/app/build/outputs/apk/debug/app-debug.apk`, for example wi
 
 1. Run `rcwlp-host` on the PC.
 2. Open RCWLP on the phone. The PC appears in the list (or use **Add PC by IP**).
-3. Tap it. The phone and the PC window show the same 6-digit code; type `y` on the PC.
+3. Tap it. The phone shows a 6-digit code; type it in the PC window. If you cancel and
+   tap again, the phone shows a new code, and the PC takes that one instead.
 4. The controller screen opens and the PC gets a new Xbox 360 controller. Play.
 
 Next time, just tap the paired PC. Each phone becomes its own player, so several phones
@@ -74,7 +76,9 @@ when locked or in other apps** ticked, RCWLP reads the controller directly from 
 kernel (`/dev/input`) instead, through [Shizuku](https://shizuku.rikka.app/), and
 *grabs* it. The phone then ignores the controller entirely (B doesn't go Back, presses
 don't wake the screen), and you can lock the phone or use other apps while it drives the
-PC. A notification shows the connection and has a Disconnect button.
+PC. A notification shows the connection and has a Disconnect button. Only controllers on
+USB or Bluetooth are grabbed; built-in buttons, like a gaming phone's shoulder triggers, keep
+working normally.
 
 Setup, once per phone:
 1. Install Shizuku and start it (Developer options → Wireless debugging, then "Start" in
@@ -92,10 +96,11 @@ foreground mode. If the app stops, the process exits and the phone gets the cont
 
 - **Without background mode the app must stay on screen.** The screen dims to almost
   black after 10 seconds; tap it to wake it.
-- **Security.** Pairing uses P-256 ECDH with a code you compare on both screens, and
-  every packet after that is signed with HMAC-SHA256 and replay-protected. Input isn't
-  encrypted, since button presses aren't secret, but nobody else on the network can
-  inject input.
+- **Security.** Pairing uses P-256 ECDH and a code derived from the key, which you type
+  on the PC. The phone commits to its key before it sees the PC's, so someone in the
+  middle can't search for keys that make the codes match. Every packet after that is
+  signed with HMAC-SHA256 and replay-protected. Input isn't encrypted, since button
+  presses aren't secret, but nobody else on the network can inject input.
 - **Rumble** plays on the controller if Android exposes its motors (most Bluetooth pads
   on Android 12+), otherwise on the phone.
 - **PS4 mode (gyro aiming).** Tick *PS4 controller mode* in the app and the PC gets a

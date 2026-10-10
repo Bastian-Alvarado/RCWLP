@@ -2,8 +2,8 @@
 //!
 //!   cargo run --example fake_phone -- [host ip] [--wiggle] [--ds4]
 //!
-//! Pairs (type `y` in the host window when asked), connects, and sends input for 10 seconds:
-//! a neutral pad by default, or a slowly circling left stick (and, with `--ds4`, a slow
+//! Pairs (type the code it prints into the host window), connects, and sends input for 10
+//! seconds: a neutral pad by default, or a slowly circling left stick (and, with `--ds4`, a slow
 //! yaw rotation on the gyro) with `--wiggle`. `--ds4` asks for a PS4 controller instead of Xbox.
 
 // The host modules are shared with this example, which only uses the phone-side half.
@@ -17,9 +17,8 @@ mod protocol;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-use p256::PublicKey;
-use p256::ecdh::EphemeralSecret;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::ecdh::diffie_hellman;
+use p256::{PublicKey, SecretKey};
 use protocol::{Id, PubKey, Reader, Writer, kind};
 use rand_core::OsRng;
 
@@ -46,29 +45,35 @@ fn main() {
         }
     };
 
-    // Pair.
+    // Pair: commit to our key in the hello, reveal it once the host has sent its own.
     let client_id: Id = crypto::random();
-    let secret = EphemeralSecret::random(&mut OsRng);
-    let client_pub: PubKey = secret.public_key().to_encoded_point(false).as_bytes().try_into().unwrap();
-    let hello = Writer::new(kind::PAIR_HELLO).bytes(&client_id).bytes(&client_pub).string("fake_phone").finish();
+    let secret = SecretKey::random(&mut OsRng);
+    let client_pub = crypto::encode(&secret.public_key());
+    let hello = Writer::new(kind::PAIR_HELLO)
+        .bytes(&client_id)
+        .bytes(&crypto::commitment(&client_pub))
+        .string("fake_phone")
+        .finish();
+    let reveal = Writer::new(kind::PAIR_REVEAL).bytes(&client_id).bytes(&client_pub).finish();
     let mut pair_key = None;
     let deadline = Instant::now() + Duration::from_secs(90);
     let pair_key = loop {
         assert!(Instant::now() < deadline, "pairing timed out");
-        socket.send_to(&hello, host).unwrap();
+        socket.send_to(if pair_key.is_none() { &hello } else { &reveal }, host).unwrap();
         let Ok((n, _)) = socket.recv_from(&mut buf) else { continue };
         let mut r = Reader::new(&buf[..n]);
         match r.header() {
             Some(kind::PAIR_CHALLENGE) if pair_key.is_none() => {
                 let hid: Id = r.array().unwrap();
+                assert_eq!(hid, host_id, "challenge from a different host");
                 let host_pub: PubKey = r.array().unwrap();
-                let shared = secret.diffie_hellman(&PublicKey::from_sec1_bytes(&host_pub).unwrap());
-                let key = crypto::hmac(
-                    shared.raw_secret_bytes(),
-                    &[b"rcwlp-pair-v1", &client_id, &hid, &client_pub, &host_pub],
-                );
-                println!("Code: {:06}  (type y in the host window)", crypto::pair_code(&key));
+                let peer = PublicKey::from_sec1_bytes(&host_pub).unwrap();
+                let shared = diffie_hellman(secret.to_nonzero_scalar(), peer.as_affine());
+                let key = crypto::derive_pair_key(shared.raw_secret_bytes(), &client_id, &hid, &client_pub, &host_pub);
+                let code = crypto::pair_code(&key);
+                println!("Code: {:03} {:03}  (type it in the host window)", code / 1000, code % 1000);
                 pair_key = Some(key);
+                continue; // Reveal right away.
             }
             Some(kind::PAIR_RESULT) => {
                 assert_eq!(r.u8(), Some(1), "host rejected pairing");
@@ -81,7 +86,6 @@ fn main() {
         }
         std::thread::sleep(Duration::from_millis(500));
     };
-    let _ = host_id;
 
     // Connect.
     let cnonce = crypto::random();
