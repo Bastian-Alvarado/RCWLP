@@ -80,6 +80,8 @@ pub fn run(config: Config, mut out: OutFn, commands: Receiver<String>) -> Result
     let mut buf = [0u8; 1500];
     loop {
         match receiver.recv_from(&mut buf) {
+            // Empty datagrams are the waker's pokes: nothing to handle, just a turn of the loop.
+            Ok((0, _)) => {}
             Ok((n, from)) => server.handle(&buf[..n], from),
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {}
             // Windows surfaces ICMP "port unreachable" from an earlier send this way; harmless.

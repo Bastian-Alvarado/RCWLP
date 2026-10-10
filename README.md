@@ -141,5 +141,8 @@ foreground mode. If the app stops, the process exits and the phone gets the cont
   vectors (`protocol-vectors.txt`). If both pass, the PC and the phone agree on every byte.
 - `cargo run --example fake_phone` plays the phone against a running host;
   `--discover` lists the hosts on the network and the protocol version each speaks.
+- `cargo run --example ds4_watch` reads the virtual DualShock 4 the way a game does and prints
+  its touchpad, click and battery; `--feedback R G B LARGE SMALL` sends a lightbar colour and
+  rumble like a game, to check they reach the phone.
 - Turn on the pre-commit hook once per clone with `git config core.hooksPath .githooks`. It
   runs whichever of the two test suites the staged files affect.
