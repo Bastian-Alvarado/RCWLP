@@ -82,6 +82,32 @@
         android:visibility="gone" />
 
     <TextView
+        android:id="@+id/stick_deadzone_label"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="8dp" />
+
+    <SeekBar
+        android:id="@+id/stick_deadzone"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="8dp" />
+
+    <TextView
+        android:id="@+id/trigger_deadzone_label"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="16dp" />
+
+    <SeekBar
+        android:id="@+id/trigger_deadzone"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="8dp"
+        android:paddingBottom="8dp" />
+
+    <TextView
         android:id="@+id/scan_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

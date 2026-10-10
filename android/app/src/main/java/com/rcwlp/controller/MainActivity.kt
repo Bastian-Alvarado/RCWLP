@@ -17,6 +17,7 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import rikka.shizuku.Shizuku
@@ -66,9 +67,32 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                 updateBackgroundStatus()
             }
         }
+        deadzoneSlider(R.id.stick_deadzone, R.id.stick_deadzone_label, "Stick dead zone", store.stickDeadzone) { store.stickDeadzone = it }
+        deadzoneSlider(R.id.trigger_deadzone, R.id.trigger_deadzone_label, "Trigger dead zone", store.triggerDeadzone) { store.triggerDeadzone = it }
         Shizuku.addBinderReceivedListenerSticky(shizukuChanged)
         Shizuku.addBinderDeadListener(shizukuChanged)
         Shizuku.addRequestPermissionResultListener(shizukuPermissionResult)
+    }
+
+    /** A 0–30% slider that saves as it moves; applies from the next connection. */
+    private fun deadzoneSlider(sliderId: Int, labelId: Int, title: String, value: Int, save: (Int) -> Unit) {
+        val label = findViewById<TextView>(labelId)
+        fun show(v: Int) {
+            label.text = if (v == 0) "$title: off" else "$title: $v%"
+        }
+        show(value)
+        findViewById<SeekBar>(sliderId).apply {
+            max = Tuning.MAX_DEADZONE_PERCENT
+            progress = value
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
+                    show(progress)
+                    if (fromUser) save(progress)
+                }
+                override fun onStartTrackingTouch(bar: SeekBar) {}
+                override fun onStopTrackingTouch(bar: SeekBar) {}
+            })
+        }
     }
 
     override fun onDestroy() {

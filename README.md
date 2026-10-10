@@ -109,6 +109,10 @@ foreground mode. If the app stops, the process exits and the phone gets the cont
   middle can't search for keys that make the codes match. Every packet after that is
   signed with HMAC-SHA256 and replay-protected. Input isn't encrypted, since button
   presses aren't secret, but nobody else on the network can inject input.
+- **Dead zones.** If a worn stick drifts or a trigger never quite releases, raise *Stick dead
+  zone* or *Trigger dead zone* on the main screen. Movement inside the zone reads as rest,
+  and the rest of the travel is stretched so full deflection still reaches the maximum.
+  Changes apply from the next connection.
 - **Rumble** plays on the controller if Android exposes its motors (most Bluetooth pads
   on Android 12+), otherwise on the phone.
 - **PS4 mode (gyro aiming).** Tick *PS4 controller mode* in the app and the PC gets a

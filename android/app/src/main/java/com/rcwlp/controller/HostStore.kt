@@ -44,6 +44,18 @@ class HostStore(context: Context) {
         get() = prefs.getBoolean("background_mode", false)
         set(value) = prefs.edit().putBoolean("background_mode", value).apply()
 
+    /** Extra stick dead zone, in percent of the travel. */
+    var stickDeadzone: Int
+        get() = prefs.getInt("stick_deadzone", 0)
+        set(value) = prefs.edit().putInt("stick_deadzone", value).apply()
+
+    /** Trigger dead zone, in percent of the travel. */
+    var triggerDeadzone: Int
+        get() = prefs.getInt("trigger_deadzone", 0)
+        set(value) = prefs.edit().putInt("trigger_deadzone", value).apply()
+
+    val tuning get() = Tuning(stickDeadzone / 100f, triggerDeadzone / 100f)
+
     fun hosts(): List<PairedHost> {
         val arr = JSONArray(prefs.getString("hosts", "[]"))
         return (0 until arr.length()).map {

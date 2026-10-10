@@ -53,6 +53,7 @@ class ControllerSession(
     }
 
     private val clientId = store.clientId
+    private val tuning = store.tuning
     @Volatile private var running = false
     /** Controller state by slot. Slot 0 is always sent, so the PC gets a controller right away. */
     @Volatile private var pads: Map<Int, PadState> = mapOf(0 to PadState())
@@ -104,8 +105,9 @@ class ControllerSession(
     /** The controller in slot 0. */
     fun update(state: PadState) = update(0, state)
 
-    fun update(slot: Int, state: PadState) {
+    fun update(slot: Int, raw: PadState) {
         require(slot in 0 until Proto.MAX_PADS)
+        val state = tuning.apply(raw)
         synchronized(this) {
             if (pads[slot] == state) return
             pads = pads + (slot to state)
