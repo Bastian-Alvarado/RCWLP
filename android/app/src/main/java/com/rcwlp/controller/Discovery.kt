@@ -25,9 +25,28 @@ object Discovery {
     fun probe(address: String, port: Int = Proto.DEFAULT_PORT): FoundHost? =
         resolve(address, port)?.let { query(listOf(it), 1500).firstOrNull() }
 
+    /**
+     * DISCOVER in this app's protocol version and in the oldest one still worth recognizing.
+     * Hosts answer the version they speak, so an outdated host still shows up, marked as such.
+     */
+    val requests: List<ByteArray> = (Proto.VERSION downTo Proto.OLDEST_DISCOVERABLE).map {
+        PacketWriter(Proto.DISCOVER, version = it).finish()
+    }
+
+    /** Reads a DISCOVER_REPLY of any protocol version, or returns null. */
+    fun parseReply(buf: ByteArray, len: Int, address: String, port: Int): FoundHost? {
+        val r = PacketReader(buf, len)
+        val (version, kind) = r.headerAnyVersion() ?: return null
+        if (kind != Proto.DISCOVER_REPLY) return null
+        val id = r.bytes(Proto.ID_LEN)?.toHex() ?: return null
+        val name = r.string() ?: return null
+        // Hosts from 0.2.0 on add their own version.
+        val hostVersion = if (r.remaining > 0) r.string() else null
+        return FoundHost(id, name, address, port, version, hostVersion)
+    }
+
     private fun query(targets: List<InetSocketAddress>, timeoutMs: Long): List<FoundHost> {
         val found = LinkedHashMap<String, FoundHost>()
-        val request = PacketWriter(Proto.DISCOVER).finish()
         DatagramSocket().use { socket ->
             socket.broadcast = true
             socket.soTimeout = 100
@@ -40,7 +59,9 @@ object Discovery {
                 if (elapsed > timeoutMs) break
                 // A few rounds, since UDP broadcasts get dropped on busy Wi-Fi.
                 if (rounds < 3 && elapsed >= rounds * 400L) {
-                    targets.forEach { runCatching { socket.send(DatagramPacket(request, request.size, it)) } }
+                    for (target in targets) {
+                        for (request in requests) runCatching { socket.send(DatagramPacket(request, request.size, target)) }
+                    }
                     rounds++
                 }
                 try {
@@ -48,12 +69,10 @@ object Discovery {
                 } catch (_: SocketTimeoutException) {
                     continue
                 }
-                val r = PacketReader(buf, incoming.length)
-                if (r.header() != Proto.DISCOVER_REPLY) continue
-                val id = r.bytes(Proto.ID_LEN)?.toHex() ?: continue
-                val name = r.string() ?: continue
                 val address = incoming.address.hostAddress ?: continue
-                found.getOrPut(id) { FoundHost(id, name, address, incoming.port).also { lastSeen[id] = it } }
+                val host = parseReply(buf, incoming.length, address, incoming.port) ?: continue
+                // A current host answers both requests; keep whichever comes first.
+                found.getOrPut(host.idHex) { host.also { if (it.compatible) lastSeen[it.idHex] = it } }
             }
         }
         return found.values.toList()

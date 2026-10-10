@@ -167,16 +167,8 @@ class ControllerActivity : Activity(), ControllerSession.Listener, InputManager.
         }
     }
 
-    override fun onState(state: ControllerSession.State, player: Int) = runOnUiThread {
-        statusText.text = when (state) {
-            ControllerSession.State.CONNECTING -> "Connecting to PC…"
-            ControllerSession.State.CONNECTED -> when {
-                ps4Mode -> "Connected · PS4 controller with gyro"
-                player > 0 -> "Connected · Player $player"
-                else -> "Connected"
-            }
-            ControllerSession.State.NOT_PAIRED -> "This PC doesn't recognize this phone anymore.\nGo back and pair again."
-        }
+    override fun onState(state: ControllerSession.State, detail: Int) = runOnUiThread {
+        statusText.text = ControllerSession.describe(state, detail, host, ps4Mode)
     }
 
     override fun onRumble(large: Int, small: Int) = rumbler.rumble(large, small)

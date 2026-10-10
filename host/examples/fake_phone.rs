@@ -5,21 +5,18 @@
 //! Pairs (type the code it prints into the host window), connects, and sends input for 10
 //! seconds: a neutral pad by default, or a slowly circling left stick (and, with `--ds4`, a slow
 //! yaw rotation on the gyro) with `--wiggle`. `--ds4` asks for a PS4 controller instead of Xbox.
-
-// The host modules are shared with this example, which only uses the phone-side half.
-#![allow(dead_code)]
-
-#[path = "../src/crypto.rs"]
-mod crypto;
-#[path = "../src/protocol.rs"]
-mod protocol;
+//!
+//! `--discover` only asks who's there, the way the app does (in this version and in v2), and
+//! prints each host with the protocol version it answered in. Use a broadcast address like
+//! 192.168.1.255 to ask the whole network.
 
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 use p256::ecdh::diffie_hellman;
 use p256::{PublicKey, SecretKey};
-use protocol::{Id, PubKey, Reader, Writer, kind};
+use rcwlp_host::protocol::{self, Id, PubKey, Reader, Writer, kind};
+use rcwlp_host::crypto;
 use rand_core::OsRng;
 
 fn main() {
@@ -31,6 +28,10 @@ fn main() {
     let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
     socket.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
     let mut buf = [0u8; 1500];
+
+    if args.iter().any(|a| a == "--discover") {
+        return discover(&socket, host);
+    }
 
     // Discover.
     let host_id: Id = loop {
@@ -144,4 +145,34 @@ fn main() {
     socket.send_to(&disconnect, host).unwrap();
     println!("Sent {seq} input packets, got {statuses} verified STATUS packets, player {player}");
     assert!(statuses > 0, "no STATUS from host");
+}
+
+/// Asks like the app does and prints every answer for two seconds.
+fn discover(socket: &UdpSocket, to: SocketAddr) {
+    socket.set_broadcast(true).unwrap();
+    for version in [protocol::VERSION, 2] {
+        socket.send_to(&Writer::with_version(version, kind::DISCOVER).finish(), to).unwrap();
+    }
+    let mut buf = [0u8; 1500];
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut seen = std::collections::HashSet::new();
+    while Instant::now() < deadline {
+        let Ok((n, from)) = socket.recv_from(&mut buf) else { continue };
+        let mut r = Reader::new(&buf[..n]);
+        let Some((version, kind::DISCOVER_REPLY)) = r.header_any() else { continue };
+        let id: Id = r.array().unwrap_or_default();
+        let name = r.string().unwrap_or_default();
+        let host_version = r.string().unwrap_or_else(|| "0.1.x or older".into());
+        if seen.insert((from, version)) {
+            let note = if version == protocol::VERSION { "compatible" } else { "different protocol" };
+            println!("{from}  \"{name}\"  host {host_version}  protocol v{version} ({note})  id {}", hex(&id));
+        }
+    }
+    if seen.is_empty() {
+        println!("No answer from {to}.");
+    }
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|b| format!("{b:02x}")).collect()
 }

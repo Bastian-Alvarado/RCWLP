@@ -9,7 +9,7 @@ use p256::{PublicKey, SecretKey};
 
 use crate::crypto::{self, HostKey};
 use crate::protocol::{self, Id, Nonce, PadState, PubKey, Reader, kind};
-use crate::{PairRequest, pair_reply, status_packet, welcome_packet};
+use crate::server::{PairRequest, pair_reply, status_packet, welcome_packet};
 
 struct Vectors(HashMap<String, String>);
 

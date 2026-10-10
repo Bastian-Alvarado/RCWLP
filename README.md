@@ -44,7 +44,9 @@ Host commands, typed in its window:
 | `quit` | unplug all virtual controllers and exit |
 
 Pairings are stored in `%APPDATA%\RCWLP\host.json`. Use `--port <n>` to change the UDP
-port from the default 47391. The phone's "Add PC by IP" then needs `ip:port`.
+port from the default 47391. The phone's "Add PC by IP" then needs `ip:port`. If a phone
+can't connect, run with `--verbose`: the host then logs every packet it ignores and why
+(wrong version, not paired, bad signature, ...).
 
 ## Phone setup
 

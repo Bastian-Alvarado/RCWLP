@@ -40,6 +40,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         controllerLabel = findViewById(R.id.controller_label)
         scanStatus = findViewById(R.id.scan_status)
         hostList = findViewById(R.id.host_list)
+        findViewById<TextView>(R.id.version).text = "RCWLP ${BuildConfig.VERSION_NAME} · protocol v${Proto.VERSION}"
         findViewById<TextView>(R.id.scan_button).setOnClickListener { scan() }
         findViewById<TextView>(R.id.add_button).setOnClickListener { askForAddress() }
         findViewById<CheckBox>(R.id.ps4_mode).apply {
@@ -151,24 +152,41 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                 scanning = false
                 if (isDestroyed) return@runOnUiThread
                 found = result
-                scanStatus.text = if (result.isEmpty()) {
-                    "No PCs found. Make sure rcwlp-host is running on the PC and both are on the same network, or add the PC by IP."
-                } else ""
+                scanStatus.text = if (result.isEmpty()) noPcsMessage(store.hosts()) else ""
                 render()
             }
         }
     }
 
+    /** Says what to check, naming the address we tried when there's a paired PC. */
+    private fun noPcsMessage(paired: List<PairedHost>): String = when (paired.size) {
+        0 -> "No PCs found. Start rcwlp-host on the PC and make sure this phone is on the same Wi-Fi, or add the PC by IP."
+        1 -> "No answer from ${paired[0].name} at ${paired[0].address}. Is rcwlp-host running there, and is this phone on the same Wi-Fi?"
+        else -> "No PCs answered. Is rcwlp-host running on the PC, and is this phone on the same Wi-Fi?"
+    }
+
     private fun render() {
         hostList.removeAllViews()
         val paired = store.hosts()
-        val online = found.map { it.idHex }.toSet()
+        val online = found.associateBy { it.idHex }
         for (h in paired) {
-            val detail = if (h.idHex in online) "Paired · online · tap to connect" else "Paired · not found right now · tap to try anyway"
-            addRow(h.name, "$detail\nLong-press to forget", { startController(h) }, { confirmForget(h) })
+            val seen = online[h.idHex]
+            val problem = seen?.incompatibility()
+            val detail = when {
+                problem != null -> "Paired · $problem"
+                seen != null -> "Paired · online · tap to connect"
+                else -> "Paired · no answer at ${h.address} · tap to try anyway"
+            }
+            val onClick = if (problem != null) ({ toast(problem) }) else ({ startController(h) })
+            addRow(h.name, "$detail\nLong-press to forget", onClick) { confirmForget(h) }
         }
         for (f in found.filter { f -> paired.none { it.idHex == f.idHex } }) {
-            addRow(f.name, "${f.address} · tap to pair", { startPairing(f) }, null)
+            val problem = f.incompatibility()
+            if (problem == null) {
+                addRow(f.name, "${f.address} · tap to pair", { startPairing(f) }, null)
+            } else {
+                addRow(f.name, "${f.address} · $problem", { toast(problem) }, null)
+            }
         }
     }
 
@@ -261,6 +279,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                 }
                 found = found.filter { it.idHex != host.idHex } + host
                 render()
+                host.incompatibility()?.let { return@runOnUiThread toast(it) }
                 store.find(host.idHex)?.let(::startController) ?: startPairing(host)
             }
         }

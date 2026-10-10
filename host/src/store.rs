@@ -21,8 +21,9 @@ pub struct Store {
     #[serde(with = "hex")]
     pub host_id: Id,
     pub clients: Vec<PairedClient>,
+    /// None for a store that only lives in memory (tests).
     #[serde(skip)]
-    path: PathBuf,
+    path: Option<PathBuf>,
 }
 
 impl Store {
@@ -39,28 +40,34 @@ impl Store {
         });
         match loaded {
             Some(mut s) => {
-                s.path = path;
+                s.path = Some(path);
                 s
             }
             None => {
-                let s = Store { host_id: crate::crypto::random(), clients: Vec::new(), path };
+                let s = Store { host_id: crate::crypto::random(), clients: Vec::new(), path: Some(path) };
                 s.save();
                 s
             }
         }
     }
 
+    /// A store that is never written to disk.
+    pub fn in_memory(host_id: Id) -> Store {
+        Store { host_id, clients: Vec::new(), path: None }
+    }
+
     pub fn save(&self) {
+        let Some(path) = &self.path else { return };
         let write = || -> std::io::Result<()> {
-            if let Some(dir) = self.path.parent() {
+            if let Some(dir) = path.parent() {
                 fs::create_dir_all(dir)?;
             }
-            let tmp = self.path.with_extension("json.tmp");
+            let tmp = path.with_extension("json.tmp");
             fs::write(&tmp, serde_json::to_string_pretty(self).unwrap())?;
-            fs::rename(&tmp, &self.path)
+            fs::rename(&tmp, path)
         };
         if let Err(e) = write() {
-            eprintln!("Could not save {}: {e}", self.path.display());
+            eprintln!("Could not save {}: {e}", path.display());
         }
     }
 

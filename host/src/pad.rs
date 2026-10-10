@@ -6,6 +6,7 @@ use std::time::Instant;
 use vigem_client::{Client, DualShock4Wired, TargetId, XButtons, XGamepad, Xbox360Wired};
 
 use crate::protocol::{PadKind, PadState};
+use crate::server::VirtualPad;
 
 const ERROR_NO_MORE_ITEMS: u32 = 259;
 
@@ -19,8 +20,8 @@ pub struct Pad {
     target: Target,
     _notifications: JoinHandle<()>,
     /// 1-based XInput player number for Xbox pads, 0 when unknown or not applicable.
-    pub player: u8,
-    pub kind: PadKind,
+    player: u8,
+    kind: PadKind,
 }
 
 impl Pad {
@@ -49,8 +50,18 @@ impl Pad {
             }
         }
     }
+}
 
-    pub fn update(&mut self, s: &PadState) {
+impl VirtualPad for Pad {
+    fn kind(&self) -> PadKind {
+        self.kind
+    }
+
+    fn player(&self) -> u8 {
+        self.player
+    }
+
+    fn update(&mut self, s: &PadState) {
         let result = match &mut self.target {
             Target::Xbox360(target) => target.update(&XGamepad {
                 buttons: XButtons(s.buttons),

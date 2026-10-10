@@ -30,11 +30,20 @@ class ControllerSession(
     private val padType: Int,
     private val listener: Listener,
 ) {
-    enum class State { CONNECTING, CONNECTED, NOT_PAIRED }
+    enum class State {
+        CONNECTING,
+        /** Still trying, but the host hasn't answered for a few seconds. */
+        NO_ANSWER,
+        /** The host answered discovery in another protocol version, passed as `detail`. */
+        WRONG_VERSION,
+        CONNECTED,
+        NOT_PAIRED,
+    }
 
     /** Called from network threads. */
     interface Listener {
-        fun onState(state: State, player: Int)
+        /** `detail` is the player number for [State.CONNECTED] and the host's protocol version for [State.WRONG_VERSION]. */
+        fun onState(state: State, detail: Int)
         fun onRumble(large: Int, small: Int)
     }
 
@@ -61,6 +70,7 @@ class ControllerSession(
     // Receiver thread only.
     private var lastStatusSeq = 0L
     private var reportedPlayer = -1
+    private var reportedWrongVersion = false
 
     // Sender thread only.
     private var seq = 0
@@ -114,6 +124,8 @@ class ControllerSession(
         rejectedBy.clear()
         cnonce = Crypto.random(Proto.NONCE_LEN)
         val packet = Packets.connect(clientId, cnonce, padType, host.key)
+        val started = SystemClock.elapsedRealtime()
+        var reportedNoAnswer = false
         while (running) {
             if (sessionKey != null) return true
             if (rejected) {
@@ -121,6 +133,12 @@ class ControllerSession(
                 return false
             }
             candidates.forEach { send(packet, it) }
+            if (SystemClock.elapsedRealtime() - started > NO_ANSWER_AFTER_MS) {
+                if (!reportedNoAnswer) listener.onState(State.NO_ANSWER, 0)
+                reportedNoAnswer = true
+                // A host of another protocol version ignores CONNECT but still answers DISCOVER.
+                for (c in candidates) Discovery.requests.forEach { send(it, c) }
+            }
             connectSignal.poll(CONNECT_RETRY_MS, TimeUnit.MILLISECONDS)
         }
         return false
@@ -177,6 +195,14 @@ class ControllerSession(
     }
 
     private fun handle(buf: ByteArray, len: Int, from: InetSocketAddress) {
+        val version = PacketReader(buf, len).headerAnyVersion()?.first ?: return
+        if (version != Proto.VERSION) {
+            if (sessionKey == null && !reportedWrongVersion && Discovery.parseReply(buf, len, "", 0) != null) {
+                reportedWrongVersion = true
+                listener.onState(State.WRONG_VERSION, version)
+            }
+            return
+        }
         when (PacketReader(buf, len).header()) {
             Proto.WELCOME -> {
                 if (sessionKey != null) return
@@ -240,10 +266,26 @@ class ControllerSession(
     private fun resolve(address: String, port: Int): InetSocketAddress? =
         runCatching { InetSocketAddress(InetAddress.getByName(address), port) }.getOrNull()
 
-    private companion object {
-        const val HEARTBEAT_MS = 50L
-        const val MIN_INTERVAL_MS = 4L
-        const val CONNECT_RETRY_MS = 500L
-        const val LOST_AFTER_MS = 3000L
+    companion object {
+        /** What to tell the user about a state; see [Listener.onState] for `detail`. */
+        fun describe(state: State, detail: Int, host: PairedHost, ps4Mode: Boolean): String = when (state) {
+            State.CONNECTING -> "Connecting to PC…"
+            State.NO_ANSWER -> "No answer from ${host.name} at ${host.address}. Is rcwlp-host running there, and is this phone on the same Wi-Fi?"
+            State.WRONG_VERSION ->
+                if (detail < Proto.VERSION) "${host.name} runs an older RCWLP host. Update it on the PC."
+                else "${host.name} runs a newer RCWLP host. Update this app."
+            State.CONNECTED -> when {
+                ps4Mode -> "Connected · PS4 controller with gyro"
+                detail > 0 -> "Connected · Player $detail"
+                else -> "Connected"
+            }
+            State.NOT_PAIRED -> "This PC doesn't recognize this phone anymore. Pair again."
+        }
+
+        private const val HEARTBEAT_MS = 50L
+        private const val MIN_INTERVAL_MS = 4L
+        private const val CONNECT_RETRY_MS = 500L
+        private const val LOST_AFTER_MS = 3000L
+        private const val NO_ANSWER_AFTER_MS = 3000L
     }
 }

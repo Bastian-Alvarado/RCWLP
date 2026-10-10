@@ -96,10 +96,17 @@ impl<'a> Reader<'a> {
 
     /// Checks magic and version, returns the packet kind.
     pub fn header(&mut self) -> Option<u8> {
-        if self.array::<4>()? != MAGIC || self.u8()? != VERSION {
+        let (version, kind) = self.header_any()?;
+        (version == VERSION).then_some(kind)
+    }
+
+    /// Checks only the magic and returns (version, kind). Discovery uses this to work across
+    /// versions, so mismatched apps and hosts can say so instead of just not finding each other.
+    pub fn header_any(&mut self) -> Option<(u8, u8)> {
+        if self.array::<4>()? != MAGIC {
             return None;
         }
-        self.u8()
+        Some((self.u8()?, self.u8()?))
     }
 
     pub fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
@@ -137,9 +144,14 @@ pub struct Writer(Vec<u8>);
 
 impl Writer {
     pub fn new(kind: u8) -> Self {
+        Writer::with_version(VERSION, kind)
+    }
+
+    /// A packet of another protocol version. Only DISCOVER is meant to cross versions.
+    pub fn with_version(version: u8, kind: u8) -> Self {
         let mut v = Vec::with_capacity(64);
         v.extend_from_slice(&MAGIC);
-        v.push(VERSION);
+        v.push(version);
         v.push(kind);
         Writer(v)
     }

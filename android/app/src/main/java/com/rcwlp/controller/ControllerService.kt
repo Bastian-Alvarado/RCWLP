@@ -167,16 +167,9 @@ class ControllerService : Service(), ControllerSession.Listener {
         stopSelf()
     }
 
-    override fun onState(state: ControllerSession.State, player: Int) {
-        val message = when (state) {
-            ControllerSession.State.CONNECTING -> "Connecting to PC…"
-            ControllerSession.State.CONNECTED -> when {
-                ps4Mode -> "Connected · PS4 controller with gyro"
-                player > 0 -> "Connected · Player $player"
-                else -> "Connected"
-            }
-            ControllerSession.State.NOT_PAIRED -> "This PC doesn't recognize this phone anymore. Pair again."
-        }
+    override fun onState(state: ControllerSession.State, detail: Int) {
+        val target = host ?: return
+        val message = ControllerSession.describe(state, detail, target, ps4Mode)
         publish(status.copy(message = message))
         if (state == ControllerSession.State.NOT_PAIRED) fail(message) else host?.let { enterForeground(it.name, message) }
     }

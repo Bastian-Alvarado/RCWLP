@@ -8,6 +8,8 @@ import javax.crypto.Mac
 object Proto {
     val MAGIC = "RCWL".toByteArray(Charsets.US_ASCII)
     const val VERSION = 3
+    /** Discovery also asks in this version, so a host that old answers and the app can say it's outdated. */
+    const val OLDEST_DISCOVERABLE = 2
     const val DEFAULT_PORT = 47391
     const val MAC_LEN = 16
     const val PUB_LEN = 65
@@ -72,12 +74,13 @@ object Packets {
         PacketWriter(Proto.DISCONNECT).bytes(clientId).u32(seq).sign(sessionKey)
 }
 
-class PacketWriter(kind: Int) {
+/** [version] is only ever different for DISCOVER, which works across versions. */
+class PacketWriter(kind: Int, version: Int = Proto.VERSION) {
     private val out = ByteArrayOutputStream(64)
 
     init {
         out.write(Proto.MAGIC)
-        out.write(Proto.VERSION)
+        out.write(version)
         out.write(kind)
     }
 
@@ -107,10 +110,20 @@ class PacketReader(private val buf: ByteArray, private val end: Int = buf.size) 
 
     /** Checks magic and version, returns the packet kind. */
     fun header(): Int? {
-        val magic = bytes(4) ?: return null
-        if (!magic.contentEquals(Proto.MAGIC) || u8() != Proto.VERSION) return null
-        return u8()
+        val (version, kind) = headerAnyVersion() ?: return null
+        return if (version == Proto.VERSION) kind else null
     }
+
+    /** Checks only the magic and returns (version, kind), so discovery can spot a host of another version. */
+    fun headerAnyVersion(): Pair<Int, Int>? {
+        val magic = bytes(4) ?: return null
+        if (!magic.contentEquals(Proto.MAGIC)) return null
+        val version = u8() ?: return null
+        val kind = u8() ?: return null
+        return version to kind
+    }
+
+    val remaining get() = end - pos
 
     fun bytes(n: Int): ByteArray? {
         if (pos + n > end) return null

@@ -5,6 +5,12 @@ key, and the new PAIR_REVEAL sends the key itself. v2 added the controller type 
 and motion data to INPUT. Versions don't talk to each other; update the host and the app
 together. Pairings made with v2 keep working, since the keys are derived the same way.
 
+Discovery is the exception, so a mismatch can be explained instead of looking like "no PC
+found". The host answers DISCOVER of any version, always in its own version, and logs that
+the phone is outdated or newer. The phone sends DISCOVER in its own version and in v2, and
+reads DISCOVER_REPLY of any version. A reply in another version means "update one side",
+and the version byte says which.
+
 Everything is UDP on one host port (default **47391**). All integers are big-endian.
 Implementations: `host/src/protocol.rs` + `host/src/crypto.rs` (PC) and
 `android/.../Protocol.kt` + `Crypto.kt` (phone). Change both together, and keep
@@ -28,7 +34,7 @@ HMAC-SHA256 over every byte of the packet before it.
 | kind | name | direction | body after header |
 |---|---|---|---|
 | 0x01 | DISCOVER | phone → broadcast | — |
-| 0x02 | DISCOVER_REPLY | host → phone | host_id[16], name |
+| 0x02 | DISCOVER_REPLY | host → phone | host_id[16], name, host_version (string, from host 0.2.0 on; may be absent) |
 | 0x10 | PAIR_HELLO | phone → host | client_id[16], commitment[32], name |
 | 0x11 | PAIR_CHALLENGE | host → phone | host_id[16], host_pub[65] |
 | 0x12 | PAIR_RESULT | host → phone | status u8 (1 ok, 0 rejected), mac[16] = MAC(pair_key, "rcwlp-pair-ok") |
