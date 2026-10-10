@@ -4,6 +4,7 @@ import android.os.SystemClock
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
 import java.security.MessageDigest
 
@@ -93,4 +94,36 @@ class Pairing(private val store: HostStore, private val host: FoundHost, private
     private companion object {
         const val TIMEOUT_MS = 90_000L
     }
+}
+
+/** Asks a host to forget this phone, as the phone forgets it. */
+object Unpairing {
+    /** Sends UNPAIR a few times; returns true once the host confirms. Blocking, about a second at most. */
+    fun run(clientId: ByteArray, host: PairedHost): Boolean {
+        val request = Packets.unpair(clientId, host.key)
+        // The host signs its answer with the same key, so only the real host can confirm.
+        val confirmation = Packets.unpaired(clientId, host.key)
+        val seen = Discovery.lastSeen[host.idHex]
+        val targets = listOfNotNull(resolve(host.address, host.port), seen?.let { resolve(it.address, it.port) }).distinct()
+        if (targets.isEmpty()) return false
+        DatagramSocket().use { socket ->
+            socket.soTimeout = 250
+            val buf = ByteArray(128)
+            val incoming = DatagramPacket(buf, buf.size)
+            repeat(ATTEMPTS) {
+                targets.forEach { socket.send(DatagramPacket(request, request.size, it)) }
+                try {
+                    socket.receive(incoming)
+                    if (buf.copyOf(incoming.length).contentEquals(confirmation)) return true
+                } catch (_: SocketTimeoutException) {
+                }
+            }
+        }
+        return false
+    }
+
+    private fun resolve(address: String, port: Int): InetSocketAddress? =
+        runCatching { InetSocketAddress(InetAddress.getByName(address), port) }.getOrNull()
+
+    private const val ATTEMPTS = 4
 }

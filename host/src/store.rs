@@ -88,6 +88,11 @@ impl Store {
             c
         })
     }
+
+    pub fn remove_id(&mut self, id: &Id) -> Option<PairedClient> {
+        let index = self.clients.iter().position(|c| &c.id == id)?;
+        self.remove(index)
+    }
 }
 
 mod hex {

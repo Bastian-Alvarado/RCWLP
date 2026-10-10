@@ -1,10 +1,11 @@
 //! Pretends to be the Android app, to test the host without a phone.
 //!
-//!   cargo run --example fake_phone -- [host ip] [--wiggle] [--ds4]
+//!   cargo run --example fake_phone -- [host ip] [--wiggle] [--ds4] [--two]
 //!
 //! Pairs (type the code it prints into the host window), connects, and sends input for 10
 //! seconds: a neutral pad by default, or a slowly circling left stick (and, with `--ds4`, a slow
-//! yaw rotation on the gyro) with `--wiggle`. `--ds4` asks for a PS4 controller instead of Xbox.
+//! yaw rotation on the gyro and a finger circling the touchpad) with `--wiggle`. `--ds4` asks
+//! for a PS4 controller instead of Xbox. `--two` adds a second controller holding A.
 //!
 //! `--discover` only asks who's there, the way the app does (in this version and in v2), and
 //! prints each host with the protocol version it answered in. Use a broadcast address like
@@ -15,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use p256::ecdh::diffie_hellman;
 use p256::{PublicKey, SecretKey};
-use rcwlp_host::protocol::{self, Id, PubKey, Reader, Writer, kind};
+use rcwlp_host::protocol::{self, Id, Input, PadState, PubKey, Reader, Writer, kind};
 use rcwlp_host::crypto;
 use rand_core::OsRng;
 
@@ -23,6 +24,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let wiggle = args.iter().any(|a| a == "--wiggle");
     let ds4 = args.iter().any(|a| a == "--ds4");
+    let two = args.iter().any(|a| a == "--two");
     let ip = args.iter().find(|a| !a.starts_with("--")).map_or("127.0.0.1", String::as_str);
     let host: SocketAddr = format!("{ip}:{}", std::env::var("RCWLP_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(protocol::DEFAULT_PORT)).parse().expect("host ip");
     let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
@@ -112,22 +114,32 @@ fn main() {
     let mut seq = 0u32;
     let mut statuses = 0;
     let mut player = 0;
+    let mut sent_at = std::collections::HashMap::new();
+    let mut rtt_ms = protocol::RTT_UNKNOWN;
     while start.elapsed() < Duration::from_secs(10) {
         seq += 1;
-        let (lx, ly) = if wiggle {
-            let t = start.elapsed().as_secs_f32();
-            ((t.cos() * 20000.0) as i16, (t.sin() * 20000.0) as i16)
-        } else {
-            (0, 0)
+        let t = start.elapsed().as_secs_f32();
+        let mut pad = PadState {
+            // 1 g up, at rest (DS4 units).
+            accel: [0, 8192, 0],
+            ..Default::default()
         };
-        let mut w = Writer::new(kind::INPUT).bytes(&client_id).u32(seq);
-        w = w.bytes(&0u16.to_be_bytes()).u8(0).u8(0);
-        // Gyro in DS4 units (16 per deg/s): 45 deg/s of yaw while wiggling. Accel: 1 g up, at rest.
-        let yaw = if wiggle { 45 * 16 } else { 0 };
-        for v in [lx, ly, 0, 0, 0, yaw, 0, 0, 8192, 0] {
-            w = w.bytes(&v.to_be_bytes());
+        if wiggle {
+            pad.thumb_lx = (t.cos() * 20000.0) as i16;
+            pad.thumb_ly = (t.sin() * 20000.0) as i16;
+            // 45 deg/s of yaw, at 16 per deg/s, and a finger circling on the touchpad.
+            pad.gyro[1] = 45 * 16;
+            pad.touch[0] = Some(((960.0 + t.cos() * 400.0) as u16, (471.0 + t.sin() * 300.0) as u16));
         }
-        socket.send_to(&w.sign(&session_key), host).unwrap();
+        let mut pads = vec![(0, pad)];
+        if two {
+            // A second controller holding A.
+            pads.push((1, PadState { buttons: 0x1000, ..Default::default() }));
+        }
+        let input = Input { rtt_ms, battery: 85, pads };
+        let packet = input.write(Writer::new(kind::INPUT).bytes(&client_id).u32(seq)).sign(&session_key);
+        socket.send_to(&packet, host).unwrap();
+        sent_at.insert(seq, Instant::now());
 
         if let Ok((n, _)) = socket.recv_from(&mut buf)
             && let Some((body, mac)) = protocol::split_mac(&buf[..n])
@@ -135,15 +147,22 @@ fn main() {
         {
             let mut r = Reader::new(body);
             if r.header() == Some(kind::STATUS) {
-                let (_seq, _large, _small) = (r.u32(), r.u8(), r.u8());
-                player = r.u8().unwrap();
+                let (_seq, ack_seq, ack_age) = (r.u32(), r.u32().unwrap(), r.u16().unwrap());
+                if let Some(at) = sent_at.get(&ack_seq) {
+                    let elapsed = at.elapsed().as_millis() as u64;
+                    rtt_ms = elapsed.saturating_sub(ack_age as u64).min(60_000) as u16;
+                }
+                if r.u8().unwrap_or(0) > 0 {
+                    let (_slot, _large, _small) = (r.u8(), r.u8(), r.u8());
+                    player = r.u8().unwrap();
+                }
                 statuses += 1;
             }
         }
     }
     let disconnect = Writer::new(kind::DISCONNECT).bytes(&client_id).u32(seq + 1).sign(&session_key);
     socket.send_to(&disconnect, host).unwrap();
-    println!("Sent {seq} input packets, got {statuses} verified STATUS packets, player {player}");
+    println!("Sent {seq} input packets, got {statuses} verified STATUS packets, player {player}, round trip {rtt_ms} ms");
     assert!(statuses > 0, "no STATUS from host");
 }
 

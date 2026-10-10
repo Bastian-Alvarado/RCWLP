@@ -8,8 +8,8 @@ use p256::ecdh::diffie_hellman;
 use p256::{PublicKey, SecretKey};
 
 use crate::crypto::{self, HostKey};
-use crate::protocol::{self, Id, Nonce, PadState, PubKey, Reader, kind};
-use crate::server::{PairRequest, pair_reply, status_packet, welcome_packet};
+use crate::protocol::{self, Id, Input, Nonce, PadState, PubKey, Reader, kind};
+use crate::server::{Feedback, PairRequest, pair_reply, status_packet, unpaired_packet, welcome_packet};
 
 struct Vectors(HashMap<String, String>);
 
@@ -43,8 +43,8 @@ impl Vectors {
         self.str(key).parse().unwrap()
     }
 
-    fn ints<const N: usize>(&self, key: &str) -> [i16; N] {
-        let v: Vec<i16> = self.str(key).split_whitespace().map(|n| n.parse().unwrap()).collect();
+    fn ints<const N: usize>(&self, key: &str) -> [i64; N] {
+        let v: Vec<i64> = self.str(key).split_whitespace().map(|n| n.parse().unwrap()).collect();
         v.try_into().unwrap()
     }
 
@@ -52,8 +52,10 @@ impl Vectors {
         SecretKey::from_slice(&self.bytes(key)).unwrap()
     }
 
-    fn pad_state(&self) -> PadState {
-        PadState {
+    /// The INPUT body the vectors describe.
+    fn input(&self) -> Input {
+        let [tx, ty] = self.ints("touch0");
+        let first = PadState {
             buttons: self.int("buttons") as u16,
             left_trigger: self.int("left_trigger") as u8,
             right_trigger: self.int("right_trigger") as u8,
@@ -61,9 +63,41 @@ impl Vectors {
             thumb_ly: self.int("ly") as i16,
             thumb_rx: self.int("rx") as i16,
             thumb_ry: self.int("ry") as i16,
-            gyro: self.ints("gyro"),
-            accel: self.ints("accel"),
+            gyro: self.ints("gyro").map(|g| g as i16),
+            accel: self.ints("accel").map(|a| a as i16),
+            touch: [Some((tx as u16, ty as u16)), None],
+        };
+        let second = PadState { buttons: self.int("second_buttons") as u16, ..Default::default() };
+        Input {
+            rtt_ms: self.int("rtt_ms") as u16,
+            battery: self.int("battery") as u8,
+            pads: vec![(0, first), (self.int("second_slot") as u8, second)],
         }
+    }
+
+    /// The STATUS feedback the vectors describe, as (slot, feedback, player).
+    fn feedback(&self) -> Vec<(u8, Feedback, u8)> {
+        let [r, g, b] = self.ints("lightbar").map(|c| c as u8);
+        let first = Feedback {
+            large: self.int("large_motor") as u8,
+            small: self.int("small_motor") as u8,
+            lightbar: (r, g, b),
+            player: None,
+        };
+        vec![
+            (0, first, self.int("player") as u8),
+            (self.int("second_slot") as u8, Feedback::default(), self.int("second_player") as u8),
+        ]
+    }
+
+    fn status(&self) -> Vec<u8> {
+        status_packet(
+            self.int("status_seq") as u32,
+            self.int("ack_seq") as u32,
+            self.int("ack_age_ms") as u16,
+            &self.feedback(),
+            &self.array("session_key"),
+        )
     }
 }
 
@@ -100,7 +134,7 @@ fn keys() {
     check(&v, "session_key", &crypto::session_key(&pair_key, &v.array("cnonce"), &v.array("hnonce")));
 }
 
-/// Parses the phone's packets the way the handlers in main.rs do.
+/// Parses the phone's packets the way the handlers in server.rs do.
 #[test]
 fn reads_phone_packets() {
     let v = Vectors::load();
@@ -138,10 +172,17 @@ fn reads_phone_packets() {
     assert_eq!(r.header(), Some(kind::INPUT));
     assert_eq!(r.array::<16>(), Some(client_id));
     assert_eq!(r.u32(), Some(v.int("seq") as u32));
-    assert_eq!(PadState::read(&mut r), Some(v.pad_state()));
+    assert_eq!(Input::read(&mut r), Some(v.input()));
+
+    let unpair = v.bytes("unpair");
+    let (body, mac) = protocol::split_mac(&unpair).unwrap();
+    assert!(crypto::verify16(&pair_key, body, mac));
+    let mut r = Reader::new(body);
+    assert_eq!(r.header(), Some(kind::UNPAIR));
+    assert_eq!(r.array::<16>(), Some(client_id));
 }
 
-/// Builds the host's packets with the same functions main.rs sends them with.
+/// Builds the host's packets with the same functions the server sends them with.
 #[test]
 fn writes_host_packets() {
     let v = Vectors::load();
@@ -165,6 +206,6 @@ fn writes_host_packets() {
 
     let hnonce: Nonce = v.array("hnonce");
     check(&v, "welcome", &welcome_packet(&hnonce, &session_key));
-    let rumble = (v.int("large_motor") as u8, v.int("small_motor") as u8);
-    check(&v, "status", &status_packet(v.int("status_seq") as u32, rumble, v.int("player") as u8, &session_key));
+    check(&v, "status", &v.status());
+    check(&v, "unpaired", &unpaired_packet(&v.array("client_id"), &pair_key));
 }

@@ -13,7 +13,11 @@ import kotlin.math.max
  * Plays the PC's rumble on the controller's motors if it has any, otherwise on the phone.
  * The host resends the motor state whenever it changes, so each effect just runs until replaced.
  */
-class Rumbler(context: Context) {
+class Rumbler(
+    context: Context,
+    /** Vibrate the phone when the controller has no motors. Only right for the controller clipped to it. */
+    private val phoneFallback: Boolean = true,
+) {
     private val phone: Vibrator? = if (Build.VERSION.SDK_INT >= 31) {
         context.getSystemService(VibratorManager::class.java)?.defaultVibrator
     } else {
@@ -55,6 +59,7 @@ class Rumbler(context: Context) {
             dev.vibrator.vibrate(effect(max(large, small), dev.vibrator.hasAmplitudeControl()))
             return
         }
+        if (!phoneFallback) return
         phone?.takeIf { it.hasVibrator() }?.let { it.vibrate(effect(max(large, small), it.hasAmplitudeControl())) }
     }
 
@@ -72,7 +77,7 @@ class Rumbler(context: Context) {
         } else if (dev != null) {
             dev.vibrator.cancel()
         }
-        phone?.cancel()
+        if (phoneFallback) phone?.cancel()
     }
 
     private fun effect(amplitude: Int, amplitudeControl: Boolean): VibrationEffect =

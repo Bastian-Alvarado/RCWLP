@@ -4,7 +4,7 @@ Use an Android phone with a clip-on controller (Backbone, Kishi, GameSir, an Xbo
 DualSense pad over Bluetooth, ...) as a regular Xbox 360 controller on your Windows PC.
 
 Unlike Moonlight, nothing is streamed: the PC doesn't capture or encode anything. Only
-controller input travels over the network, in packets of 66 bytes, and rumble comes
+controller input travels over the network, in packets of 80 bytes, and rumble comes
 back the other way. The phone screen stays black and dims itself to save battery.
 
 ```
@@ -69,7 +69,13 @@ Then install `android/app/build/outputs/apk/debug/app-debug.apk`, for example wi
 4. The controller screen opens and the PC gets a new Xbox 360 controller. Play.
 
 Next time, just tap the paired PC. Each phone becomes its own player, so several phones
-work at once.
+work at once. A phone with several controllers attached (say a clip-on and a Bluetooth
+pad) gives the PC one controller for each, up to four, and each keeps its number while the
+others come and go.
+
+While connected, the controller screen shows the round trip to the PC in milliseconds, and
+the host's `list` shows it too, with the phone's battery. Forgetting a PC on the phone also
+unpairs the phone on the PC when the PC is reachable.
 
 ## Background mode (screen off, other apps)
 
@@ -109,7 +115,9 @@ foreground mode. If the app stops, the process exits and the phone gets the cont
   DualShock 4 instead of an Xbox pad, fed by the phone's gyroscope and accelerometer.
   Steam Input can then do gyro aiming: in a game's controller settings, set gyro to
   "As Mouse" or "As Joystick". Few games read DS4 motion on their own, so Steam is the
-  usual way. The touchpad isn't sent yet.
+  usual way. In PS4 mode the phone screen is the DS4 touchpad: slide a finger to touch,
+  tap to click. The phone's battery shows as the controller's, and when a game colours the
+  DS4 lightbar, the controller screen takes on that colour.
 - **ViGEmBus** is no longer developed upstream, but it still works and is what Sunshine
   uses. `host/vendor/vigem-client` is a copy of the `vigem-client` crate (MIT), extended
   with DS4 motion reports and DS4 rumble, which the published crate lacks.

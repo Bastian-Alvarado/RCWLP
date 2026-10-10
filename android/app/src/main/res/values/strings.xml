@@ -18,4 +18,5 @@
     <string name="background_hint">You can lock the phone or switch apps. The controller keeps working.\nDisconnect here or from the notification.</string>
     <string name="ps4_mode_no_gyro">This phone has no gyroscope, so PS4 mode can\'t do gyro aiming.</string>
     <string name="controller_hint">The screen dims after 10 seconds. Tap to wake it.\nAll controller buttons go to the PC.</string>
+    <string name="controller_hint_ps4">The screen is the touchpad: slide to touch, tap to click. It dims after 10 seconds.\nAll controller buttons go to the PC.</string>
 </resources>

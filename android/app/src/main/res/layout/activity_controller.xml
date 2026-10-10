@@ -4,6 +4,14 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
+    <!-- Tinted with the DualShock 4 lightbar colour a game sets, like a player light. -->
+    <View
+        android:id="@+id/lightbar"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0.18"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/content"
         android:layout_width="match_parent"

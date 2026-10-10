@@ -32,7 +32,9 @@ class EvdevService() : IEvdevService.Stub() {
     private val pads = ConcurrentHashMap<String, EvdevPad>()
     @Volatile private var callback: IEvdevCallback? = null
     @Volatile private var running = false
-    private var lastSent: PadState? = null
+    /** The last state sent per slot. Guarded by [lock], like [slots]. */
+    private val lastSent = HashMap<Int, PadState>()
+    private val slots = SlotAssigner<String>()
     private val rescan = ArrayBlockingQueue<Unit>(1)
     /** Built-in gamepad-like devices already logged as skipped. Scan thread only. */
     private val skipped = HashSet<String>()
@@ -52,7 +54,7 @@ class EvdevService() : IEvdevService.Stub() {
 
     override fun start(callback: IEvdevCallback) {
         this.callback = callback
-        synchronized(lock) { lastSent = null }
+        synchronized(lock) { lastSent.clear() }
         reportDevices()
         report()
         if (running) return
@@ -89,6 +91,11 @@ class EvdevService() : IEvdevService.Stub() {
         for (dev in found) {
             if (dev.isExternal && (dev.isGamepad || dev.vidPid in controllerIds)) {
                 val pad = EvdevPad(dev)
+                if (dev.isGamepad && synchronized(lock) { slots.assign(dev.controller) } == null) {
+                    Log.i(TAG, "Leaving ${dev.name} alone: all ${Proto.MAX_PADS} controller slots are taken")
+                    Evdev.close(dev.fd)
+                    continue
+                }
                 pads[dev.path] = pad
                 thread(name = "evdev-${dev.path.substringAfterLast('/')}", isDaemon = true) { readLoop(pad) }
                 added = true
@@ -106,7 +113,8 @@ class EvdevService() : IEvdevService.Stub() {
         val fd = Evdev.open(path)
         if (fd < 0) return null
         val id = Evdev.id(fd) ?: IntArray(4)
-        return Probed(path, fd, Evdev.name(fd) ?: "", id, Evdev.keyBits(fd), Evdev.absBits(fd))
+        val controller = Probed.controllerKey(Evdev.uniq(fd), Evdev.phys(fd), path)
+        return Probed(path, fd, Evdev.name(fd) ?: "", id, Evdev.keyBits(fd), Evdev.absBits(fd), controller)
     }
 
     private fun readLoop(pad: EvdevPad) {
@@ -137,23 +145,54 @@ class EvdevService() : IEvdevService.Stub() {
         }
     }
 
-    /** Sends the merged state of all controllers if it changed. */
+    /**
+     * Each physical controller's slot. A controller's gamepad device takes the slot; its other
+     * interfaces (like the "Consumer Control" device with the home button) share it.
+     */
+    private fun slotOf(pad: EvdevPad, gamepads: Collection<EvdevPad>): Int? =
+        slots.slotOf(pad.controller)
+            ?: gamepads.firstOrNull { it.vidPid == pad.vidPid }?.let { slots.slotOf(it.controller) }
+
+    /** Sends each controller's merged state if it changed, and which controllers went away. */
     private fun report() {
-        val state = synchronized(lock) {
-            val merged = merge(pads.values.map { it.state() })
-            if (merged == lastSent) return
-            lastSent = merged
-            merged
+        val changed = ArrayList<Pair<Int, PadState>>()
+        val removed = ArrayList<Int>()
+        synchronized(lock) {
+            val gamepads = pads.values.filter { it.isGamepad }
+            val present = gamepads.map { it.controller }.toSet()
+            for ((slot, controller) in slots.assigned()) {
+                if (controller !in present) {
+                    slots.release(controller)
+                    lastSent.remove(slot)
+                    removed += slot
+                }
+            }
+            pads.values.groupBy { slotOf(it, gamepads) }.forEach { (slot, group) ->
+                if (slot == null) return@forEach
+                val merged = merge(group.map { it.state() })
+                if (lastSent[slot] != merged) {
+                    lastSent[slot] = merged
+                    changed += slot to merged
+                }
+            }
         }
         try {
-            callback?.onState(state.buttons, state.leftTrigger, state.rightTrigger, state.lx, state.ly, state.rx, state.ry)
+            removed.forEach { callback?.onRemoved(it) }
+            for ((slot, s) in changed) {
+                callback?.onState(slot, s.buttons, s.leftTrigger, s.rightTrigger, s.lx, s.ly, s.rx, s.ry)
+            }
         } catch (e: RemoteException) {
             Log.w(TAG, "App is gone", e)
         }
     }
 
     private fun reportDevices() {
-        val names = pads.values.filter { it.isGamepad }.joinToString("\n") { it.name }
+        val names = synchronized(lock) {
+            pads.values.filter { it.isGamepad }
+                .mapNotNull { pad -> slots.slotOf(pad.controller)?.let { it to pad.name } }
+                .sortedBy { it.first }
+                .joinToString("\n") { (slot, name) -> "$slot:$name" }
+        }
         try {
             callback?.onDevices(names)
         } catch (e: RemoteException) {
@@ -192,14 +231,27 @@ class Probed(
     val id: IntArray,
     val keyBits: ByteArray?,
     val absBits: ByteArray?,
+    /** Which physical controller this belongs to; see [controllerKey]. */
+    val controller: String,
 ) {
     val isGamepad = Evdev.GAMEPAD_BUTTONS.any { Evdev.hasBit(keyBits, it) }
     val isExternal = id[0] == BUS_USB || id[0] == BUS_BLUETOOTH
     val vidPid = (id[1] shl 16) or id[2]
 
-    private companion object {
-        const val BUS_USB = 0x03
-        const val BUS_BLUETOOTH = 0x05
+    companion object {
+        private const val BUS_USB = 0x03
+        private const val BUS_BLUETOOTH = 0x05
+
+        /**
+         * Tells controllers apart and ties a controller's interfaces together: its Bluetooth
+         * address if it has one, else its USB port (phys without the "/inputN" interface part),
+         * else just the device node.
+         */
+        fun controllerKey(uniq: String?, phys: String?, path: String): String = when {
+            !uniq.isNullOrBlank() -> "uniq:$uniq"
+            !phys.isNullOrBlank() -> "phys:" + phys.substringBeforeLast("/input")
+            else -> "path:$path"
+        }
     }
 }
 
@@ -210,6 +262,7 @@ class Probed(
  */
 class EvdevPad(dev: Probed) {
     val path = dev.path
+    val controller = dev.controller
     val fd = dev.fd
     val name = dev.name
     val vidPid = dev.vidPid

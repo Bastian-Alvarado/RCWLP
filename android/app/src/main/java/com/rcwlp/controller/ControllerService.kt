@@ -34,7 +34,8 @@ class ControllerService : Service(), ControllerSession.Listener {
     )
 
     private lateinit var store: HostStore
-    private lateinit var rumbler: Rumbler
+    /** Rumble per controller slot; only slot 0 may buzz the phone itself. */
+    private val rumblers = java.util.concurrent.ConcurrentHashMap<Int, Rumbler>()
     private var host: PairedHost? = null
     private var session: ControllerSession? = null
     private var motion: MotionSource? = null
@@ -54,13 +55,25 @@ class ControllerService : Service(), ControllerSession.Listener {
     }
 
     private val readerCallback = object : IEvdevCallback.Stub() {
-        override fun onState(buttons: Int, leftTrigger: Int, rightTrigger: Int, lx: Int, ly: Int, rx: Int, ry: Int) {
-            session?.update(PadState(buttons, leftTrigger, rightTrigger, lx, ly, rx, ry))
+        override fun onState(slot: Int, buttons: Int, leftTrigger: Int, rightTrigger: Int, lx: Int, ly: Int, rx: Int, ry: Int) {
+            session?.update(slot, PadState(buttons, leftTrigger, rightTrigger, lx, ly, rx, ry))
+        }
+
+        override fun onRemoved(slot: Int) {
+            rumblers.remove(slot)?.stop()
+            session?.remove(slot)
         }
 
         override fun onDevices(names: String) {
-            rumbler.device = GamepadMapper.connected().firstOrNull()
-            publish(status.copy(controllers = names))
+            // Grabbed controllers still show up as Android input devices, which is how their
+            // motors are reached. Match them to slots by order, which is how slots were handed out.
+            val devices = GamepadMapper.connected()
+            val lines = names.lineSequence().filter { it.isNotBlank() }.toList()
+            for (line in lines) {
+                val slot = line.substringBefore(':').toIntOrNull() ?: continue
+                rumblers.getOrPut(slot) { Rumbler(this@ControllerService, phoneFallback = slot == 0) }.device = devices.getOrNull(slot)
+            }
+            publish(status.copy(controllers = lines.joinToString("\n") { it.substringAfter(':') }))
         }
     }
 
@@ -86,7 +99,6 @@ class ControllerService : Service(), ControllerSession.Listener {
     override fun onCreate() {
         super.onCreate()
         store = HostStore(this)
-        rumbler = Rumbler(this)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -121,10 +133,11 @@ class ControllerService : Service(), ControllerSession.Listener {
         acquireLocks()
         ps4Mode = store.ps4Mode
         val padType = if (ps4Mode) Proto.PAD_DUALSHOCK4 else Proto.PAD_XBOX360
-        val s = ControllerSession(store, target, padType, this).also { it.start() }
+        // Slot 0 can always fall back to the phone's own vibration, even before a controller appears.
+        rumblers[0] = Rumbler(this)
+        val s = ControllerSession(store, target, padType, this, { batteryLevel(this) }).also { it.start() }
         session = s
         if (ps4Mode) motion = MotionSource(this, orientFromGravity = true) { s.update(it) }.also { it.start() }
-        rumbler.device = GamepadMapper.connected().firstOrNull()
         bindReader()
     }
 
@@ -139,7 +152,8 @@ class ControllerService : Service(), ControllerSession.Listener {
         motion = null
         session?.stop()
         session = null
-        rumbler.stop()
+        rumblers.values.forEach(Rumbler::stop)
+        rumblers.clear()
         releaseLocks()
     }
 
@@ -174,7 +188,10 @@ class ControllerService : Service(), ControllerSession.Listener {
         if (state == ControllerSession.State.NOT_PAIRED) fail(message) else host?.let { enterForeground(it.name, message) }
     }
 
-    override fun onRumble(large: Int, small: Int) = rumbler.rumble(large, small)
+    override fun onFeedback(pads: List<Feedback>) {
+        if (pads.isEmpty()) rumblers.values.forEach(Rumbler::stop)
+        for (f in pads) rumblers[f.slot]?.rumble(f.large, f.small)
+    }
 
     private fun enterForeground(title: String, text: String) {
         val n = notification(title, text, ongoing = true)

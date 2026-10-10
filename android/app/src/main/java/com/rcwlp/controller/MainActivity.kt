@@ -288,10 +288,21 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private fun confirmForget(host: PairedHost) {
         AlertDialog.Builder(this)
             .setTitle("Forget ${host.name}?")
-            .setMessage("You'll need to pair again to use it. To remove this phone on the PC too, type list and then forget <n> in the host window.")
+            .setMessage("You'll need to pair again to use it. The PC is asked to forget this phone too.")
             .setPositiveButton("Forget") { _, _ ->
-                store.remove(host.idHex)
-                render()
+                thread {
+                    // Ask the PC first: the request is signed with the pair key, which goes away next.
+                    val confirmed = runCatching { Unpairing.run(store.clientId, host) }.getOrDefault(false)
+                    runOnUiThread {
+                        store.remove(host.idHex)
+                        if (isDestroyed) return@runOnUiThread
+                        render()
+                        toast(
+                            if (confirmed) "Forgot ${host.name}, here and on the PC."
+                            else "Forgot ${host.name} here. The PC didn't answer, so remove this phone there too: type list, then forget <n>.",
+                        )
+                    }
+                }
             }
             .setNegativeButton("Cancel", null)
             .show()

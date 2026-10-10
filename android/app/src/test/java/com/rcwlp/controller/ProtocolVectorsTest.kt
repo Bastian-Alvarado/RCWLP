@@ -50,13 +50,21 @@ class ProtocolVectorsTest {
         check("pair_hello", Packets.pairHello(clientId, publicKey, str("name")))
         check("pair_reveal", Packets.pairReveal(clientId, publicKey))
         check("connect", Packets.connect(clientId, hex("cnonce"), int("pad_type"), hex("pair_key")))
+        check("unpair", Packets.unpair(clientId, hex("pair_key")))
+        check("unpaired", Packets.unpaired(clientId, hex("pair_key")))
 
-        val pad = PadState(int("buttons"), int("left_trigger"), int("right_trigger"), int("lx"), int("ly"), int("rx"), int("ry"))
+        val first = PadState(int("buttons"), int("left_trigger"), int("right_trigger"), int("lx"), int("ly"), int("rx"), int("ry"))
         val (gx, gy, gz) = ints("gyro")
         val (ax, ay, az) = ints("accel")
-        val buf = ByteBuffer.allocate(Proto.INPUT_BODY_LEN + Proto.MAC_LEN)
+        val (tx, ty) = ints("touch0")
+        val pads = listOf(
+            PadReport(0, first, Motion(gx, gy, gz, ax, ay, az), Touch(tx to ty)),
+            PadReport(int("second_slot"), PadState(buttons = int("second_buttons"))),
+        )
+        val buf = ByteBuffer.allocate(Proto.INPUT_MAX_LEN)
         val mac = Crypto.newMac(hex("session_key"))
-        check("input", Packets.input(buf, mac, clientId, int("seq"), pad, Motion(gx, gy, gz, ax, ay, az)))
+        val len = Packets.input(buf, mac, clientId, int("seq"), int("rtt_ms"), int("battery"), pads)
+        check("input", buf.array().copyOf(len))
     }
 
     /** Reads the host's packets the way Pairing and ControllerSession do. */
@@ -80,14 +88,22 @@ class ProtocolVectorsTest {
         assertEquals(Proto.WELCOME, w.header())
         assertArrayEquals(hex("hnonce"), w.bytes(Proto.NONCE_LEN))
 
-        val status = hex("status")
-        val (statusBody, statusMac) = Proto.splitMac(status, status.size)!!
+        val packet = hex("status")
+        val (statusBody, statusMac) = Proto.splitMac(packet, packet.size)!!
         assertTrue("status mac", Crypto.verify16(sessionKey, statusBody, statusMac))
-        val s = PacketReader(statusBody)
-        assertEquals(Proto.STATUS, s.header())
-        assertEquals(int("status_seq").toLong(), s.u32())
-        assertEquals(int("large_motor"), s.u8())
-        assertEquals(int("small_motor"), s.u8())
-        assertEquals(int("player"), s.u8())
+        val r = PacketReader(statusBody)
+        assertEquals(Proto.STATUS, r.header())
+        val status = Status.read(r)!!
+        assertEquals(int("status_seq").toLong(), status.seq)
+        assertEquals(int("ack_seq").toLong(), status.ackSeq)
+        assertEquals(int("ack_age_ms"), status.ackAgeMs)
+        val (red, green, blue) = ints("lightbar")
+        assertEquals(
+            listOf(
+                Feedback(0, int("large_motor"), int("small_motor"), int("player"), red shl 16 or (green shl 8) or blue),
+                Feedback(int("second_slot"), 0, 0, int("second_player"), 0),
+            ),
+            status.pads,
+        )
     }
 }

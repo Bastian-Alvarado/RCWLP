@@ -2,11 +2,17 @@
 //! All integers are big-endian.
 
 pub const MAGIC: [u8; 4] = *b"RCWL";
-pub const VERSION: u8 = 3;
+pub const VERSION: u8 = 4;
 pub const DEFAULT_PORT: u16 = 47391;
 pub const MAC_LEN: usize = 16;
 pub const PUB_LEN: usize = 65;
 pub const MAX_NAME: usize = 64;
+/// Controllers per phone.
+pub const MAX_PADS: usize = 4;
+/// Button bit for the DualShock 4 touchpad click; XInput leaves it unused.
+pub const TOUCHPAD_CLICK: u16 = 0x0800;
+pub const BATTERY_UNKNOWN: u8 = 0x7F;
+pub const RTT_UNKNOWN: u16 = 0xFFFF;
 
 pub type Id = [u8; 16];
 pub type Nonce = [u8; 16];
@@ -27,6 +33,8 @@ pub mod kind {
     pub const INPUT: u8 = 0x30;
     pub const STATUS: u8 = 0x31;
     pub const DISCONNECT: u8 = 0x40;
+    pub const UNPAIR: u8 = 0x41;
+    pub const UNPAIRED: u8 = 0x42;
 }
 
 /// Which virtual controller a phone asks for in CONNECT.
@@ -47,9 +55,10 @@ impl PadKind {
     }
 }
 
-/// One controller snapshot. Buttons, triggers and sticks use XINPUT_GAMEPAD's layout.
-/// Motion is in DualShock 4 units and axes: gyro 16 LSB per deg/s, accel 8192 LSB per g,
-/// X right, Y up out of the controller's face, Z toward the player.
+/// One controller snapshot. Buttons, triggers and sticks use XINPUT_GAMEPAD's layout, plus
+/// [`TOUCHPAD_CLICK`]. Motion is in DualShock 4 units and axes: gyro 16 LSB per deg/s, accel
+/// 8192 LSB per g, X right, Y up out of the controller's face, Z toward the player. Touches
+/// are in DualShock 4 touchpad coordinates (x 0–1919, y 0–942).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct PadState {
     pub buttons: u16,
@@ -61,11 +70,13 @@ pub struct PadState {
     pub thumb_ry: i16,
     pub gyro: [i16; 3],
     pub accel: [i16; 3],
+    /// Up to two fingers on the touchpad, None while lifted.
+    pub touch: [Option<(u16, u16)>; 2],
 }
 
 impl PadState {
     pub fn read(r: &mut Reader) -> Option<PadState> {
-        Some(PadState {
+        let mut s = PadState {
             buttons: r.u16()?,
             left_trigger: r.u8()?,
             right_trigger: r.u8()?,
@@ -75,7 +86,69 @@ impl PadState {
             thumb_ry: r.i16()?,
             gyro: [r.i16()?, r.i16()?, r.i16()?],
             accel: [r.i16()?, r.i16()?, r.i16()?],
-        })
+            touch: [None; 2],
+        };
+        let down = r.u8()?;
+        for (i, finger) in s.touch.iter_mut().enumerate() {
+            let (x, y) = (r.u16()?, r.u16()?);
+            if down & (1 << i) != 0 {
+                *finger = Some((x, y));
+            }
+        }
+        Some(s)
+    }
+
+    pub fn write(&self, mut w: Writer) -> Writer {
+        w = w.u16(self.buttons).u8(self.left_trigger).u8(self.right_trigger);
+        for v in [self.thumb_lx, self.thumb_ly, self.thumb_rx, self.thumb_ry].iter().chain(&self.gyro).chain(&self.accel) {
+            w = w.i16(*v);
+        }
+        let down = self.touch.iter().enumerate().fold(0, |acc, (i, f)| acc | (f.is_some() as u8) << i);
+        w = w.u8(down);
+        for finger in self.touch {
+            let (x, y) = finger.unwrap_or((0, 0));
+            w = w.u16(x).u16(y);
+        }
+        w
+    }
+}
+
+/// The body of an INPUT packet after client id and seq.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Input {
+    /// The phone's round trip to the host in ms, [`RTT_UNKNOWN`] if it has none yet.
+    pub rtt_ms: u16,
+    /// Bit 7: charging. Bits 0–6: percent, [`BATTERY_UNKNOWN`] if unknown.
+    pub battery: u8,
+    /// (slot, state) for each controller on the phone. Slots are 0..MAX_PADS.
+    pub pads: Vec<(u8, PadState)>,
+}
+
+impl Input {
+    pub fn read(r: &mut Reader) -> Option<Input> {
+        let rtt_ms = r.u16()?;
+        let battery = r.u8()?;
+        let count = r.u8()? as usize;
+        if count > MAX_PADS {
+            return None;
+        }
+        let mut pads = Vec::with_capacity(count);
+        for _ in 0..count {
+            let slot = r.u8()?;
+            if slot as usize >= MAX_PADS || pads.iter().any(|(s, _)| *s == slot) {
+                return None;
+            }
+            pads.push((slot, PadState::read(r)?));
+        }
+        Some(Input { rtt_ms, battery, pads })
+    }
+
+    pub fn write(&self, mut w: Writer) -> Writer {
+        w = w.u16(self.rtt_ms).u8(self.battery).u8(self.pads.len() as u8);
+        for (slot, state) in &self.pads {
+            w = state.write(w.u8(*slot));
+        }
+        w
     }
 }
 
@@ -158,6 +231,16 @@ impl Writer {
 
     pub fn u8(mut self, v: u8) -> Self {
         self.0.push(v);
+        self
+    }
+
+    pub fn u16(mut self, v: u16) -> Self {
+        self.0.extend_from_slice(&v.to_be_bytes());
+        self
+    }
+
+    pub fn i16(mut self, v: i16) -> Self {
+        self.0.extend_from_slice(&v.to_be_bytes());
         self
     }
 

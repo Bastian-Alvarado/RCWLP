@@ -18,7 +18,10 @@ class DiscoveryTest {
     @Test
     fun asksInEveryVersionItCanRecognize() {
         val versions = Discovery.requests.map { PacketReader(it).headerAnyVersion() }
-        assertEquals(listOf(Proto.VERSION to Proto.DISCOVER, Proto.OLDEST_DISCOVERABLE to Proto.DISCOVER), versions)
+        // Every version from this one down to the oldest worth recognizing, newest first.
+        val expected = (Proto.VERSION downTo Proto.OLDEST_DISCOVERABLE).map { it to Proto.DISCOVER }
+        assertEquals(expected, versions)
+        assertEquals(Proto.VERSION to Proto.DISCOVER, versions.first())
     }
 
     @Test

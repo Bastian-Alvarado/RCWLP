@@ -22,6 +22,10 @@ object Evdev {
     @JvmStatic external fun open(path: String): Int
     @JvmStatic external fun close(fd: Int)
     @JvmStatic external fun name(fd: Int): String?
+    /** Where the device is attached, like "usb-xhci-hcd.0.auto-1/input0"; the part before "/input" is shared by a controller's interfaces. */
+    @JvmStatic external fun phys(fd: Int): String?
+    /** A per-device id, usually the Bluetooth address; often empty for USB. */
+    @JvmStatic external fun uniq(fd: Int): String?
     /** [bustype, vendor, product, version] */
     @JvmStatic external fun id(fd: Int): IntArray?
     @JvmStatic external fun keyBits(fd: Int): ByteArray?

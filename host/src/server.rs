@@ -2,13 +2,13 @@
 //! the outside world only through [`Platform`], so tests can drive it without a network, a
 //! clock or the ViGEmBus driver.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crate::crypto::{self, HostKey};
-use crate::protocol::{self, Commitment, Id, Nonce, PadKind, PadState, PubKey, Reader, Writer, kind};
+use crate::protocol::{self, Commitment, Id, Input, Nonce, PadKind, PadState, PubKey, Reader, Writer, kind};
 use crate::store::{PairedClient, Store};
 
 /// This host's version, shown at startup and sent in DISCOVER_REPLY.
@@ -16,8 +16,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Release all buttons if a phone goes quiet, so nothing stays held down.
 pub const NEUTRAL_AFTER: Duration = Duration::from_secs(1);
-/// Unplug the virtual controller after this long without input.
+/// Unplug the virtual controllers after this long without input.
 pub const DROP_AFTER: Duration = Duration::from_secs(15);
+/// Unplug one controller after its slot has been missing from input for this long.
+pub const SLOT_GONE_AFTER: Duration = Duration::from_secs(2);
 /// Status packets double as the host heartbeat and resend lost rumble changes.
 pub const STATUS_EVERY: Duration = Duration::from_millis(250);
 pub const PAIR_TIMEOUT: Duration = Duration::from_secs(60);
@@ -31,18 +33,30 @@ const REJECT_NOT_PAIRED: u8 = 1;
 pub trait Platform {
     fn now(&self) -> Instant;
     fn send(&self, data: &[u8], to: SocketAddr) -> std::io::Result<()>;
-    /// Plugs in a virtual controller. `on_rumble(large, small)` may be called from any thread.
-    fn plug(&self, kind: PadKind, on_rumble: RumbleFn) -> Result<Box<dyn VirtualPad>, String>;
+    /// Plugs in a virtual controller. `on_feedback` may be called from any thread.
+    fn plug(&self, kind: PadKind, on_feedback: FeedbackFn) -> Result<Box<dyn VirtualPad>, String>;
 }
 
-pub type RumbleFn = Box<dyn FnMut(u8, u8) + Send>;
+/// What a game sends back to a controller.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Feedback {
+    pub large: u8,
+    pub small: u8,
+    /// DualShock 4 lightbar colour, black for Xbox pads.
+    pub lightbar: (u8, u8, u8),
+    /// The Xbox player number when XInput changes it, 1-based.
+    pub player: Option<u8>,
+}
+
+pub type FeedbackFn = Box<dyn FnMut(Feedback) + Send>;
 
 /// A virtual controller. Dropping it unplugs it.
 pub trait VirtualPad {
     fn kind(&self) -> PadKind;
     /// 1-based XInput player number, 0 when unknown or not applicable.
     fn player(&self) -> u8;
-    fn update(&mut self, state: &PadState);
+    /// `battery` is the phone's, in INPUT's encoding.
+    fn update(&mut self, state: &PadState, battery: u8);
 }
 
 /// What the server tells whoever shows it to the user.
@@ -56,14 +70,14 @@ pub enum Out {
     Debug(String),
     /// A pairing request is waiting for its code (the phone's name), or none is any more.
     Pairing(Option<String>),
-    /// The phones connected right now, described. Sent whenever that changes.
+    /// The controllers connected right now, described. Sent whenever that changes.
     Connected(Vec<String>),
 }
 
 pub type OutFn = Box<dyn FnMut(Out) + Send>;
 
-/// (client, large motor, small motor) sent from a driver notification thread.
-type RumbleEvent = (Id, u8, u8);
+/// (client, slot, feedback) sent from a driver notification thread.
+type FeedbackEvent = (Id, u8, Feedback);
 
 /// Why a packet was ignored, for `--verbose`.
 type Handled = Result<(), String>;
@@ -79,32 +93,56 @@ struct Session {
     created: Instant,
 }
 
+/// One virtual controller of a phone.
+struct Slot {
+    pad: Box<dyn VirtualPad>,
+    feedback: Feedback,
+    last_seen: Instant,
+    /// The player number last shown to the user, to announce when XInput renumbers.
+    announced_player: u8,
+}
+
+impl Slot {
+    fn player(&self) -> u8 {
+        self.feedback.player.unwrap_or_else(|| self.pad.player())
+    }
+}
+
 struct Conn {
     name: String,
-    pad: Option<Box<dyn VirtualPad>>,
+    /// The phone's controllers by slot.
+    slots: BTreeMap<u8, Slot>,
     /// The session the phone is sending input on.
     active: Option<Session>,
     /// A newer session that only replaces `active` once the phone proves it holds the key,
     /// so a replayed CONNECT can't kick a phone that's in use.
     pending: Option<Session>,
-    rumble: (u8, u8),
     last_input: Instant,
     neutral: bool,
     last_status: Instant,
+    /// The phone's round trip in ms, as it last reported it.
+    rtt_ms: Option<u16>,
+    battery: u8,
 }
 
 impl Conn {
     fn new(name: String, now: Instant) -> Conn {
         Conn {
             name,
-            pad: None,
+            slots: BTreeMap::new(),
             active: None,
             pending: None,
-            rumble: (0, 0),
             last_input: now,
             neutral: true,
             last_status: now,
+            rtt_ms: None,
+            battery: protocol::BATTERY_UNKNOWN,
         }
+    }
+
+    /// How a slot's controller appears in messages: the phone's name, numbered from the second on.
+    fn label(&self, slot: u8) -> String {
+        if slot == 0 { self.name.clone() } else { format!("{} #{}", self.name, slot + 1) }
     }
 }
 
@@ -127,8 +165,8 @@ pub struct Server<P: Platform> {
     store: Store,
     conns: HashMap<Id, Conn>,
     pairing: Option<PairRequest>,
-    rumble_tx: Sender<RumbleEvent>,
-    rumble_rx: Receiver<RumbleEvent>,
+    feedback_tx: Sender<FeedbackEvent>,
+    feedback_rx: Receiver<FeedbackEvent>,
     out: OutFn,
     verbose: bool,
     /// Addresses already reported as running another protocol version, so the log isn't flooded.
@@ -136,24 +174,27 @@ pub struct Server<P: Platform> {
     /// Addresses that sent a current-version DISCOVER. Current apps also send an old-version
     /// one so they can recognize old hosts, which mustn't count as an outdated app.
     current_apps: HashSet<IpAddr>,
+    /// Keys of phones that just unpaired themselves, so a repeated UNPAIR still gets an answer.
+    recently_unpaired: HashMap<Id, ([u8; 32], Instant)>,
     last_connected: Vec<String>,
 }
 
 impl<P: Platform> Server<P> {
     pub fn new(platform: P, store: Store, host_name: String, out: OutFn, verbose: bool) -> Server<P> {
-        let (rumble_tx, rumble_rx) = mpsc::channel();
+        let (feedback_tx, feedback_rx) = mpsc::channel();
         Server {
             platform,
             host_name,
             store,
             conns: HashMap::new(),
             pairing: None,
-            rumble_tx,
-            rumble_rx,
+            feedback_tx,
+            feedback_rx,
             out,
             verbose,
             warned_versions: HashSet::new(),
             current_apps: HashSet::new(),
+            recently_unpaired: HashMap::new(),
             last_connected: Vec::new(),
         }
     }
@@ -183,6 +224,7 @@ impl<P: Platform> Server<P> {
                 kind::CONNECT => self.on_connect(buf, from),
                 kind::INPUT => self.on_input(buf, from),
                 kind::DISCONNECT => self.on_disconnect(buf),
+                kind::UNPAIR => self.on_unpair(buf, from),
                 _ => Err("unknown kind".into()),
             }
         };
@@ -382,7 +424,7 @@ impl<P: Platform> Server<P> {
         r.header();
         let client_id: Id = r.array().ok_or("too short")?;
         let seq = r.u32().ok_or("too short")?;
-        let state = PadState::read(&mut r).ok_or("too short")?;
+        let input = Input::read(&mut r).ok_or("malformed controller list")?;
         let now = self.platform.now();
 
         let conn = self.conns.get_mut(&client_id).ok_or("no session for that phone")?;
@@ -403,45 +445,54 @@ impl<P: Platform> Server<P> {
         session.addr = addr;
         let pad_kind = session.kind;
 
-        // The phone switched controller type since its last session: swap the virtual pad.
-        if conn.pad.as_ref().is_some_and(|p| p.kind() != pad_kind) {
-            conn.pad = None;
-        }
-        let mut message = None;
-        if conn.pad.is_none() {
-            let rumble = self.rumble_tx.clone();
-            let on_rumble: RumbleFn = Box::new(move |large, small| {
-                let _ = rumble.send((client_id, large, small));
-            });
-            match self.platform.plug(pad_kind, on_rumble) {
-                Ok(pad) => {
-                    message = Some(format!("\"{}\" connected as {}.", conn.name, describe(pad.as_ref())));
-                    conn.pad = Some(pad);
-                }
-                Err(e) => {
-                    let msg = format!("Could not create a virtual controller for \"{}\": {e}", conn.name);
-                    self.conns.remove(&client_id);
-                    self.event(msg);
-                    return Ok(());
-                }
-            }
-        } else if promoted {
-            message = Some(format!("\"{}\" reconnected.", conn.name));
-        }
-
-        if let Some(pad) = conn.pad.as_mut() {
-            pad.update(&state);
+        // The phone switched controller type since its last session: replace its pads.
+        if conn.slots.values().any(|s| s.pad.kind() != pad_kind) {
+            conn.slots.clear();
         }
         conn.last_input = now;
         conn.neutral = false;
-        if promoted {
-            let packet = status_for(conn, now);
-            if let Some((packet, to)) = packet {
-                self.send(&packet, to);
+        conn.rtt_ms = (input.rtt_ms != protocol::RTT_UNKNOWN).then_some(input.rtt_ms);
+        conn.battery = input.battery;
+
+        let mut events = Vec::new();
+        for (slot, state) in &input.pads {
+            if !conn.slots.contains_key(slot) {
+                let feedback = self.feedback_tx.clone();
+                let slot_no = *slot;
+                let on_feedback: FeedbackFn = Box::new(move |f| {
+                    let _ = feedback.send((client_id, slot_no, f));
+                });
+                match self.platform.plug(pad_kind, on_feedback) {
+                    Ok(pad) => {
+                        events.push(format!("\"{}\" connected as {}.", conn.label(*slot), describe(pad.kind(), pad.player())));
+                        let announced_player = pad.player();
+                        conn.slots.insert(*slot, Slot { pad, feedback: Feedback::default(), last_seen: now, announced_player });
+                    }
+                    Err(e) => {
+                        let msg = format!("Could not create a virtual controller for \"{}\": {e}", conn.label(*slot));
+                        self.conns.remove(&client_id);
+                        self.event(msg);
+                        self.report_connected();
+                        return Ok(());
+                    }
+                }
+            }
+            if let Some(s) = conn.slots.get_mut(slot) {
+                s.last_seen = now;
+                s.pad.update(state, input.battery);
             }
         }
-        if let Some(m) = message {
-            self.event(m);
+        if promoted && events.is_empty() {
+            events.push(format!("\"{}\" reconnected.", conn.name));
+        }
+        if promoted && let Some((packet, to)) = status_for(conn, now) {
+            self.send(&packet, to);
+        }
+        let changed = !events.is_empty();
+        for e in events {
+            self.event(e);
+        }
+        if changed {
             self.report_connected();
         }
         Ok(())
@@ -468,16 +519,51 @@ impl<P: Platform> Server<P> {
         Ok(())
     }
 
-    /// Sends rumble that games asked for since the last call.
-    pub fn drain_rumble(&mut self) {
+    /// The phone forgot this PC and asks to be forgotten too.
+    fn on_unpair(&mut self, buf: &[u8], from: SocketAddr) -> Handled {
+        let (body, mac) = protocol::split_mac(buf).ok_or("too short")?;
+        let mut r = Reader::new(body);
+        r.header();
+        let client_id: Id = r.array().ok_or("too short")?;
+
+        let (key, name) = match self.store.find(&client_id) {
+            Some(c) => (c.key, Some(c.name.clone())),
+            // Already gone: the phone repeats UNPAIR until it hears back, so answer again.
+            None => (self.recently_unpaired.get(&client_id).ok_or("not paired")?.0, None),
+        };
+        if !crypto::verify16(&key, body, mac) {
+            return Err("bad signature".into());
+        }
+        let reply = unpaired_packet(&client_id, &key);
+        if let Some(name) = name {
+            self.store.remove_id(&client_id);
+            self.conns.remove(&client_id);
+            self.recently_unpaired.insert(client_id, (key, self.platform.now()));
+            self.event(format!("\"{name}\" unpaired itself from this PC."));
+            self.report_connected();
+        }
+        self.send(&reply, from);
+        Ok(())
+    }
+
+    /// Sends what games told the controllers (rumble, lightbar) since the last call.
+    pub fn drain_feedback(&mut self) {
         let now = self.platform.now();
-        while let Ok((client_id, large, small)) = self.rumble_rx.try_recv() {
-            if let Some(conn) = self.conns.get_mut(&client_id) {
-                conn.rumble = (large, small);
-                if let Some((packet, to)) = status_for(conn, now) {
-                    self.send(&packet, to);
-                }
+        let mut players_changed = false;
+        while let Ok((client_id, slot, mut f)) = self.feedback_rx.try_recv() {
+            let Some(conn) = self.conns.get_mut(&client_id) else { continue };
+            let Some(s) = conn.slots.get_mut(&slot) else { continue };
+            match f.player {
+                Some(p) => players_changed |= s.feedback.player != Some(p),
+                None => f.player = s.feedback.player,
             }
+            s.feedback = f;
+            if let Some((packet, to)) = status_for(conn, now) {
+                self.send(&packet, to);
+            }
+        }
+        if players_changed {
+            self.report_connected();
         }
     }
 
@@ -495,21 +581,45 @@ impl<P: Platform> Server<P> {
                 (self.out)(Out::Pairing(None));
             }
         }
+        self.recently_unpaired.retain(|_, (_, at)| now - *at < PAIR_TIMEOUT);
 
         let mut gone = Vec::new();
+        let mut detached = Vec::new();
+        let mut renumbered = Vec::new();
         let mut statuses = Vec::new();
         for (id, conn) in &mut self.conns {
-            let idle = now - conn.last_input;
+            let idle = now.saturating_duration_since(conn.last_input);
             if conn.active.is_some() {
                 if idle > DROP_AFTER {
                     gone.push(*id);
                     continue;
                 }
                 if idle > NEUTRAL_AFTER && !conn.neutral {
-                    if let Some(pad) = &mut conn.pad {
-                        pad.update(&PadState::default());
+                    for s in conn.slots.values_mut() {
+                        s.pad.update(&PadState::default(), conn.battery);
                     }
                     conn.neutral = true;
+                }
+                // A controller the phone stopped reporting while it kept sending input was detached.
+                let last_input = conn.last_input;
+                let missing: Vec<u8> = conn
+                    .slots
+                    .iter()
+                    .filter(|(_, s)| last_input.saturating_duration_since(s.last_seen) > SLOT_GONE_AFTER)
+                    .map(|(slot, _)| *slot)
+                    .collect();
+                for slot in missing {
+                    conn.slots.remove(&slot);
+                    detached.push(conn.label(slot));
+                }
+                let name = conn.name.clone();
+                for (slot, s) in conn.slots.iter_mut() {
+                    let player = s.player();
+                    if s.pad.kind() == PadKind::Xbox360 && player != s.announced_player && player > 0 {
+                        s.announced_player = player;
+                        let label = if *slot == 0 { name.clone() } else { format!("{name} #{}", slot + 1) };
+                        renumbered.push((label, player));
+                    }
                 }
                 if now - conn.last_status >= STATUS_EVERY {
                     statuses.extend(status_for(conn, now));
@@ -521,10 +631,16 @@ impl<P: Platform> Server<P> {
         for (packet, to) in statuses {
             self.send(&packet, to);
         }
-        let mut changed = false;
+        let mut changed = !detached.is_empty() || !renumbered.is_empty();
+        for label in detached {
+            self.event(format!("\"{label}\" was detached from the phone."));
+        }
+        for (label, player) in renumbered {
+            self.event(format!("\"{label}\" is now player {player}."));
+        }
         for id in gone {
             if let Some(conn) = self.conns.remove(&id)
-                && conn.pad.is_some()
+                && !conn.slots.is_empty()
             {
                 self.event(format!("\"{}\" timed out.", conn.name));
                 changed = true;
@@ -576,8 +692,25 @@ impl<P: Platform> Server<P> {
             .iter()
             .enumerate()
             .map(|(i, c)| {
-                let state = match self.conns.get(&c.id).and_then(|conn| conn.pad.as_deref()) {
-                    Some(pad) => format!("connected as {}", describe(pad)),
+                let state = match self.conns.get(&c.id).filter(|conn| !conn.slots.is_empty()) {
+                    Some(conn) => {
+                        let pads: Vec<String> = conn
+                            .slots
+                            .iter()
+                            .map(|(slot, s)| {
+                                let number = if *slot == 0 { String::new() } else { format!("#{} ", slot + 1) };
+                                format!("{number}{}", describe(s.pad.kind(), s.player()))
+                            })
+                            .collect();
+                        let mut extra = String::new();
+                        if let Some(ms) = conn.rtt_ms {
+                            extra += &format!(" · {ms} ms");
+                        }
+                        if let Some(b) = battery_text(conn.battery) {
+                            extra += &format!(" · phone battery {b}");
+                        }
+                        format!("connected: {}{extra}", pads.join("; "))
+                    }
                     None => "not connected".into(),
                 };
                 format!("  {}. {} ({state})", i + 1, c.name)
@@ -592,7 +725,7 @@ impl<P: Platform> Server<P> {
         let mut now: Vec<String> = self
             .conns
             .values()
-            .filter_map(|c| c.pad.as_deref().map(|pad| format!("{} ({})", c.name, describe(pad))))
+            .flat_map(|c| c.slots.iter().map(|(slot, s)| format!("{} ({})", c.label(*slot), describe(s.pad.kind(), s.player()))))
             .collect();
         now.sort();
         if now != self.last_connected {
@@ -632,16 +765,26 @@ fn kind_name(k: u8) -> String {
         kind::CONNECT => "CONNECT".into(),
         kind::INPUT => "INPUT".into(),
         kind::DISCONNECT => "DISCONNECT".into(),
+        kind::UNPAIR => "UNPAIR".into(),
         _ => format!("packet {k:#04x}"),
     }
 }
 
-pub fn describe(pad: &dyn VirtualPad) -> String {
-    match pad.kind() {
-        PadKind::Xbox360 if pad.player() > 0 => format!("Xbox 360 controller, player {}", pad.player()),
+pub fn describe(kind: PadKind, player: u8) -> String {
+    match kind {
+        PadKind::Xbox360 if player > 0 => format!("Xbox 360 controller, player {player}"),
         PadKind::Xbox360 => "Xbox 360 controller".into(),
         PadKind::DualShock4 => "PS4 controller with gyro".into(),
     }
+}
+
+/// "80%" or "80%, charging" from INPUT's battery byte, None if the phone didn't say.
+fn battery_text(battery: u8) -> Option<String> {
+    let percent = battery & 0x7F;
+    if percent > 100 {
+        return None;
+    }
+    Some(if battery & 0x80 != 0 { format!("{percent}%, charging") } else { format!("{percent}%") })
 }
 
 /// The pairing request still waiting for a decision, if it hasn't expired.
@@ -666,12 +809,22 @@ pub(crate) fn pair_reply(p: &PairRequest, host_id: &Id) -> Vec<u8> {
     }
 }
 
+pub(crate) fn unpaired_packet(client_id: &Id, pair_key: &[u8; 32]) -> Vec<u8> {
+    Writer::new(kind::UNPAIRED).bytes(client_id).sign(pair_key)
+}
+
 pub(crate) fn welcome_packet(hnonce: &Nonce, key: &[u8; 32]) -> Vec<u8> {
     Writer::new(kind::WELCOME).bytes(hnonce).sign(key)
 }
 
-pub(crate) fn status_packet(seq: u32, (large, small): (u8, u8), player: u8, key: &[u8; 32]) -> Vec<u8> {
-    Writer::new(kind::STATUS).u32(seq).u8(large).u8(small).u8(player).sign(key)
+/// `pads` holds (slot, feedback, player) per controller.
+pub(crate) fn status_packet(seq: u32, ack_seq: u32, ack_age_ms: u16, pads: &[(u8, Feedback, u8)], key: &[u8; 32]) -> Vec<u8> {
+    let mut w = Writer::new(kind::STATUS).u32(seq).u32(ack_seq).u16(ack_age_ms).u8(pads.len() as u8);
+    for (slot, f, player) in pads {
+        let (r, g, b) = f.lightbar;
+        w = w.u8(*slot).u8(f.large).u8(f.small).u8(*player).u8(r).u8(g).u8(b);
+    }
+    w.sign(key)
 }
 
 /// The next STATUS for a connection and where to send it, or None without an active session.
@@ -679,8 +832,9 @@ fn status_for(conn: &mut Conn, now: Instant) -> Option<(Vec<u8>, SocketAddr)> {
     conn.last_status = now;
     let s = conn.active.as_mut()?;
     s.out_seq += 1;
-    let player = conn.pad.as_ref().map_or(0, |p| p.player());
-    Some((status_packet(s.out_seq, conn.rumble, player, &s.key), s.addr))
+    let age = now.saturating_duration_since(conn.last_input).as_millis().min(u16::MAX as u128) as u16;
+    let pads: Vec<(u8, Feedback, u8)> = conn.slots.iter().map(|(slot, p)| (*slot, p.feedback, p.player())).collect();
+    Some((status_packet(s.out_seq, s.last_seq, age, &pads, &s.key), s.addr))
 }
 
 #[cfg(test)]

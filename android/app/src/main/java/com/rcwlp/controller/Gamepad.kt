@@ -31,6 +31,8 @@ object XButton {
     const val LB = 0x0100
     const val RB = 0x0200
     const val GUIDE = 0x0400
+    /** Unused by XInput; the protocol uses it for the DualShock 4 touchpad click. */
+    const val TOUCHPAD_CLICK = 0x0800
     const val A = 0x1000
     const val B = 0x2000
     const val X = 0x4000
@@ -38,7 +40,7 @@ object XButton {
 
     val NAMES = listOf(
         A to "A", B to "B", X to "X", Y to "Y", LB to "LB", RB to "RB", LTHUMB to "LS", RTHUMB to "RS",
-        BACK to "Back", START to "Start", GUIDE to "Guide", UP to "Up", DOWN to "Down", LEFT to "Left", RIGHT to "Right",
+        BACK to "Back", START to "Start", GUIDE to "Guide", TOUCHPAD_CLICK to "Touchpad", UP to "Up", DOWN to "Down", LEFT to "Left", RIGHT to "Right",
     )
 }
 

@@ -11,6 +11,8 @@ import java.nio.ByteBuffer
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicIntegerArray
+import java.util.concurrent.atomic.AtomicLongArray
 import kotlin.concurrent.thread
 
 /**
@@ -29,6 +31,8 @@ class ControllerSession(
     /** [Proto.PAD_XBOX360] or [Proto.PAD_DUALSHOCK4]. */
     private val padType: Int,
     private val listener: Listener,
+    /** The phone's battery in INPUT's encoding; called every few seconds on the network thread. */
+    private val battery: () -> Int = { Proto.BATTERY_UNKNOWN },
 ) {
     enum class State {
         CONNECTING,
@@ -44,13 +48,23 @@ class ControllerSession(
     interface Listener {
         /** `detail` is the player number for [State.CONNECTED] and the host's protocol version for [State.WRONG_VERSION]. */
         fun onState(state: State, detail: Int)
-        fun onRumble(large: Int, small: Int)
+        /** Rumble, player and lightbar per controller slot. Empty means stop everything. */
+        fun onFeedback(pads: List<Feedback>)
     }
 
     private val clientId = store.clientId
     @Volatile private var running = false
-    @Volatile private var pad = PadState()
+    /** Controller state by slot. Slot 0 is always sent, so the PC gets a controller right away. */
+    @Volatile private var pads: Map<Int, PadState> = mapOf(0 to PadState())
     @Volatile private var motion = Motion()
+    @Volatile private var touch = Touch()
+
+    /** Smoothed round trip to the host in ms, or null before the first measurement. */
+    @Volatile var latencyMs: Int? = null
+        private set
+    /** When each recent INPUT went out, by seq, for measuring the round trip. */
+    private val sentAt = AtomicLongArray(LATENCY_SLOTS)
+    private val sentSeq = AtomicIntegerArray(LATENCY_SLOTS)
     private val wake = ArrayBlockingQueue<Unit>(1)
     /** Wakes the sender while it waits for WELCOME or CONNECT_REJECT. */
     private val connectSignal = ArrayBlockingQueue<Unit>(1)
@@ -87,15 +101,36 @@ class ControllerSession(
         connectSignal.offer(Unit)
     }
 
-    fun update(state: PadState) {
-        if (state == pad) return
-        pad = state
+    /** The controller in slot 0. */
+    fun update(state: PadState) = update(0, state)
+
+    fun update(slot: Int, state: PadState) {
+        require(slot in 0 until Proto.MAX_PADS)
+        synchronized(this) {
+            if (pads[slot] == state) return
+            pads = pads + (slot to state)
+        }
+        wake.offer(Unit)
+    }
+
+    /** A controller was detached. Slot 0 stays, neutral, so the PC keeps its first controller. */
+    fun remove(slot: Int) {
+        synchronized(this) {
+            pads = if (slot == 0) pads + (0 to PadState()) else pads - slot
+        }
         wake.offer(Unit)
     }
 
     /** Called from the sensor thread. */
     fun update(state: Motion) {
         motion = state
+        wake.offer(Unit)
+    }
+
+    /** Fingers on the phone screen, used as the DualShock 4 touchpad. */
+    fun update(state: Touch) {
+        if (state == touch) return
+        touch = state
         wake.offer(Unit)
     }
 
@@ -148,21 +183,38 @@ class ControllerSession(
         val key = sessionKey ?: return
         val target = hostAddress ?: return
         val mac = Crypto.newMac(key)
-        val buf = ByteBuffer.allocate(Proto.INPUT_BODY_LEN + Proto.MAC_LEN)
+        val buf = ByteBuffer.allocate(Proto.INPUT_MAX_LEN)
         seq = 0
+        for (i in 0 until LATENCY_SLOTS) sentSeq.set(i, 0)
         lastStatusAt = SystemClock.elapsedRealtime()
+        var batteryLevel = Proto.BATTERY_UNKNOWN
+        var batteryReadAt = 0L
         while (running) {
             seq++
-            send(Packets.input(buf, mac, clientId, seq, pad, motion), target)
-            val sentAt = SystemClock.elapsedRealtime()
+            val now = SystemClock.elapsedRealtime()
+            if (now - batteryReadAt > BATTERY_EVERY_MS) {
+                batteryLevel = runCatching(battery).getOrDefault(Proto.BATTERY_UNKNOWN)
+                batteryReadAt = now
+            }
+            val reports = pads.toSortedMap().map { (slot, state) ->
+                if (slot == 0) PadReport(0, state, motion, touch) else PadReport(slot, state)
+            }
+            val rtt = latencyMs?.coerceAtMost(Proto.RTT_UNKNOWN - 1) ?: Proto.RTT_UNKNOWN
+            val len = Packets.input(buf, mac, clientId, seq, rtt, batteryLevel, reports)
+            val i = seq and (LATENCY_SLOTS - 1)
+            val sentTime = SystemClock.elapsedRealtime()
+            sentAt.set(i, sentTime)
+            sentSeq.set(i, seq)
+            socket.send(DatagramPacket(buf.array(), len, target))
 
-            if (sentAt - lastStatusAt > LOST_AFTER_MS) {
-                listener.onRumble(0, 0)
+            if (sentTime - lastStatusAt > LOST_AFTER_MS) {
+                latencyMs = null
+                listener.onFeedback(emptyList())
                 return // Host went quiet: start a fresh session.
             }
             wake.poll(HEARTBEAT_MS, TimeUnit.MILLISECONDS)
             // Sensors fire hundreds of times a second; batch them into at most one packet per interval.
-            val wait = MIN_INTERVAL_MS - (SystemClock.elapsedRealtime() - sentAt)
+            val wait = MIN_INTERVAL_MS - (SystemClock.elapsedRealtime() - sentTime)
             if (wait > 0) Thread.sleep(wait)
         }
     }
@@ -237,20 +289,31 @@ class ControllerSession(
                 if (!Crypto.verify16(key, body, mac)) return
                 val r = PacketReader(body)
                 r.header()
-                val statusSeq = r.u32() ?: return
-                val large = r.u8() ?: return
-                val small = r.u8() ?: return
-                val player = r.u8() ?: return
-                if (statusSeq <= lastStatusSeq) return
-                lastStatusSeq = statusSeq
-                lastStatusAt = SystemClock.elapsedRealtime()
+                val status = Status.read(r) ?: return
+                if (status.seq <= lastStatusSeq) return
+                lastStatusSeq = status.seq
+                val now = SystemClock.elapsedRealtime()
+                lastStatusAt = now
+                measureLatency(status, now)
+                val player = status.pads.firstOrNull { it.slot == 0 }?.player ?: 0
                 if (player != reportedPlayer) {
                     reportedPlayer = player
                     listener.onState(State.CONNECTED, player)
                 }
-                listener.onRumble(large, small)
+                listener.onFeedback(status.pads)
             }
         }
+    }
+
+    /**
+     * The round trip is from sending the acknowledged INPUT to now, minus the time the host
+     * held it before sending this STATUS. Smoothed so one late packet doesn't jump the display.
+     */
+    private fun measureLatency(status: Status, now: Long) {
+        val i = (status.ackSeq.toInt()) and (LATENCY_SLOTS - 1)
+        if (sentSeq.get(i).toLong() != status.ackSeq) return // Too old, or from before a reconnect.
+        val sample = (now - sentAt.get(i) - status.ackAgeMs).coerceAtLeast(0).toInt()
+        latencyMs = latencyMs?.let { (it * 3 + sample + 2) / 4 } ?: sample
     }
 
     /** Saves where the host is, now that it has proven itself at that address. */
@@ -287,5 +350,8 @@ class ControllerSession(
         private const val CONNECT_RETRY_MS = 500L
         private const val LOST_AFTER_MS = 3000L
         private const val NO_ANSWER_AFTER_MS = 3000L
+        private const val BATTERY_EVERY_MS = 5000L
+        /** Remembered send times; a power of two, and far more than are ever in flight. */
+        private const val LATENCY_SLOTS = 256
     }
 }

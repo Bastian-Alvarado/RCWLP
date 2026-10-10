@@ -16,7 +16,8 @@ use super::*;
 #[derive(Default)]
 struct FakePadState {
     updates: Vec<PadState>,
-    rumble: Option<RumbleFn>,
+    battery: u8,
+    feedback: Option<FeedbackFn>,
     unplugged: bool,
 }
 
@@ -32,8 +33,10 @@ impl VirtualPad for FakePad {
     fn player(&self) -> u8 {
         1
     }
-    fn update(&mut self, state: &PadState) {
-        self.state.borrow_mut().updates.push(*state);
+    fn update(&mut self, state: &PadState, battery: u8) {
+        let mut s = self.state.borrow_mut();
+        s.updates.push(*state);
+        s.battery = battery;
     }
 }
 
@@ -63,12 +66,12 @@ impl Platform for FakePlatform {
         self.world.borrow_mut().sent.push((data.to_vec(), to));
         Ok(())
     }
-    fn plug(&self, kind: PadKind, on_rumble: RumbleFn) -> Result<Box<dyn VirtualPad>, String> {
+    fn plug(&self, kind: PadKind, on_feedback: FeedbackFn) -> Result<Box<dyn VirtualPad>, String> {
         let mut world = self.world.borrow_mut();
         if world.plug_fails {
             return Err("no driver".into());
         }
-        let state = Rc::new(RefCell::new(FakePadState { rumble: Some(on_rumble), ..Default::default() }));
+        let state = Rc::new(RefCell::new(FakePadState { feedback: Some(on_feedback), ..Default::default() }));
         world.pads.push((kind, state.clone()));
         Ok(Box::new(FakePad { kind, state }))
     }
@@ -164,6 +167,7 @@ struct Phone {
     cnonce: Nonce,
     session_key: Option<[u8; 32]>,
     seq: u32,
+    battery: u8,
 }
 
 impl Phone {
@@ -179,6 +183,7 @@ impl Phone {
             cnonce: [0; 16],
             session_key: None,
             seq: 0,
+            battery: protocol::BATTERY_UNKNOWN,
         }
     }
 
@@ -239,32 +244,60 @@ impl Phone {
     }
 
     fn input(&mut self, s: PadState) -> Vec<u8> {
+        self.input_pads(&[(0, s)])
+    }
+
+    fn input_pads(&mut self, pads: &[(u8, PadState)]) -> Vec<u8> {
         self.seq += 1;
-        let mut w = Writer::new(kind::INPUT)
-            .bytes(&self.id)
-            .u32(self.seq)
-            .bytes(&s.buttons.to_be_bytes())
-            .u8(s.left_trigger)
-            .u8(s.right_trigger);
-        for v in [s.thumb_lx, s.thumb_ly, s.thumb_rx, s.thumb_ry].iter().chain(&s.gyro).chain(&s.accel) {
-            w = w.bytes(&v.to_be_bytes());
-        }
-        w.sign(&self.session_key.unwrap())
+        let body = Input { rtt_ms: protocol::RTT_UNKNOWN, battery: self.battery, pads: pads.to_vec() };
+        body.write(Writer::new(kind::INPUT).bytes(&self.id).u32(self.seq)).sign(&self.session_key.unwrap())
     }
 
     fn disconnect(&mut self) -> Vec<u8> {
         Writer::new(kind::DISCONNECT).bytes(&self.id).u32(self.seq + 1).sign(&self.session_key.unwrap())
     }
 
-    /// Returns (large motor, small motor, player) from a STATUS signed with the session key.
-    fn read_status(&self, packet: &[u8]) -> (u8, u8, u8) {
+    fn unpair(&self) -> Vec<u8> {
+        Writer::new(kind::UNPAIR).bytes(&self.id).sign(&self.pair_key.unwrap())
+    }
+
+    /// Reads a STATUS signed with the session key.
+    fn status(&self, packet: &[u8]) -> Status {
         let (body, mac) = protocol::split_mac(packet).unwrap();
         assert!(crypto::verify16(&self.session_key.unwrap(), body, mac), "bad STATUS mac");
         let mut r = Reader::new(body);
         assert_eq!(r.header(), Some(kind::STATUS));
         r.u32().unwrap();
-        (r.u8().unwrap(), r.u8().unwrap(), r.u8().unwrap())
+        let ack_seq = r.u32().unwrap();
+        let ack_age_ms = r.u16().unwrap();
+        let pads = (0..r.u8().unwrap())
+            .map(|_| {
+                let slot = r.u8().unwrap();
+                let f = Feedback {
+                    large: r.u8().unwrap(),
+                    small: r.u8().unwrap(),
+                    player: Some(r.u8().unwrap()),
+                    lightbar: (r.u8().unwrap(), r.u8().unwrap(), r.u8().unwrap()),
+                };
+                (slot, f)
+            })
+            .collect();
+        Status { ack_seq, ack_age_ms, pads }
     }
+
+    /// (large motor, small motor, player) of slot 0, from a STATUS.
+    fn read_status(&self, packet: &[u8]) -> (u8, u8, u8) {
+        let status = self.status(packet);
+        let (_, f) = status.pads.iter().find(|(slot, _)| *slot == 0).expect("slot 0 in STATUS");
+        (f.large, f.small, f.player.unwrap())
+    }
+}
+
+#[derive(Debug)]
+struct Status {
+    ack_seq: u32,
+    ack_age_ms: u16,
+    pads: Vec<(u8, Feedback)>,
 }
 
 fn pressed_a() -> PadState {
@@ -497,8 +530,8 @@ fn rumble_reaches_the_phone() {
     rig.connect(&mut phone, PadKind::Xbox360);
     rig.take_sent();
 
-    (rig.pad(0).borrow_mut().rumble.as_mut().unwrap())(200, 50);
-    rig.server.drain_rumble();
+    (rig.pad(0).borrow_mut().feedback.as_mut().unwrap())(Feedback { large: 200, small: 50, ..Default::default() });
+    rig.server.drain_feedback();
     assert_eq!(phone.read_status(&rig.take_sent()[0].0), (200, 50, 1));
 }
 
@@ -557,4 +590,142 @@ fn reads_typed_codes() {
     for bad in ["", "12345", "1234567", "12345a", "forget 1", "y"] {
         assert_eq!(parse_code(bad), None, "{bad:?}");
     }
+}
+
+#[test]
+fn each_controller_on_the_phone_gets_its_own_pad() {
+    let mut rig = Rig::new();
+    let mut phone = Phone::new(1);
+    rig.pair(&mut phone);
+    rig.connect(&mut phone, PadKind::Xbox360);
+    rig.take_out();
+
+    rig.feed(&phone.input_pads(&[(0, PadState::default()), (1, pressed_a())]), phone.addr);
+    assert_eq!(rig.pad_count(), 2);
+    assert_eq!(rig.pad(1).borrow().updates, vec![pressed_a()]);
+    let out = rig.take_out();
+    assert!(out.iter().any(|o| matches!(o, Out::Event(e) if e == "\"Phone 1 #2\" connected as Xbox 360 controller, player 1.")), "{out:?}");
+
+    // The second controller is detached: the phone keeps sending, without slot 1.
+    for _ in 0..3 {
+        rig.clock.set(rig.clock.get() + Duration::from_millis(900));
+        rig.feed(&phone.input(PadState::default()), phone.addr);
+        rig.server.tick();
+    }
+    assert!(rig.pad(1).borrow().unplugged);
+    assert!(!rig.pad(0).borrow().unplugged);
+    assert!(rig.take_out().iter().any(|o| matches!(o, Out::Event(e) if e.contains("\"Phone 1 #2\" was detached"))));
+}
+
+#[test]
+fn a_quiet_phone_keeps_its_controllers_until_the_timeout() {
+    let mut rig = Rig::new();
+    let mut phone = Phone::new(1);
+    rig.pair(&mut phone);
+    rig.connect(&mut phone, PadKind::Xbox360);
+    rig.feed(&phone.input_pads(&[(0, PadState::default()), (3, PadState::default())]), phone.addr);
+    rig.advance(Duration::from_secs(5));
+    assert!(!rig.pad(1).borrow().unplugged, "silence isn't a detached controller");
+}
+
+#[test]
+fn status_acknowledges_input_for_the_latency_measurement() {
+    let mut rig = Rig::new();
+    let mut phone = Phone::new(1);
+    rig.pair(&mut phone);
+    rig.connect(&mut phone, PadKind::Xbox360);
+    rig.feed(&phone.input(pressed_a()), phone.addr);
+    rig.take_sent();
+
+    rig.clock.set(rig.clock.get() + Duration::from_millis(40));
+    rig.server.tick();
+    rig.clock.set(rig.clock.get() + STATUS_EVERY);
+    rig.server.tick();
+    let status = phone.status(&rig.take_sent()[0].0);
+    assert_eq!(status.ack_seq, phone.seq, "acknowledges the latest input");
+    assert_eq!(status.ack_age_ms as u128, (Duration::from_millis(40) + STATUS_EVERY).as_millis());
+}
+
+#[test]
+fn battery_reaches_the_pads_and_the_list() {
+    let mut rig = Rig::new();
+    let mut phone = Phone::new(1);
+    phone.battery = 0x80 | 64;
+    rig.pair(&mut phone);
+    rig.connect(&mut phone, PadKind::DualShock4);
+    assert_eq!(rig.pad(0).borrow().battery, 0x80 | 64);
+    rig.take_out();
+    rig.command("list");
+    let out = rig.take_out();
+    assert!(out.iter().any(|o| matches!(o, Out::Reply(r) if r.contains("phone battery 64%, charging"))), "{out:?}");
+}
+
+#[test]
+fn the_lightbar_colour_reaches_the_phone() {
+    let mut rig = Rig::new();
+    let mut phone = Phone::new(1);
+    rig.pair(&mut phone);
+    rig.connect(&mut phone, PadKind::DualShock4);
+    rig.take_sent();
+
+    let lightbar = Feedback { lightbar: (255, 0, 64), ..Default::default() };
+    (rig.pad(0).borrow_mut().feedback.as_mut().unwrap())(lightbar);
+    rig.server.drain_feedback();
+    let status = phone.status(&rig.take_sent()[0].0);
+    assert_eq!(status.pads[0].1.lightbar, (255, 0, 64));
+}
+
+#[test]
+fn xinput_renumbering_players_reaches_the_phone_and_the_list() {
+    let mut rig = Rig::new();
+    let mut phone = Phone::new(1);
+    rig.pair(&mut phone);
+    rig.connect(&mut phone, PadKind::Xbox360);
+    rig.take_sent();
+    rig.take_out();
+    (rig.pad(0).borrow_mut().feedback.as_mut().unwrap())(Feedback { player: Some(3), ..Default::default() });
+    rig.server.drain_feedback();
+    assert_eq!(phone.read_status(&rig.take_sent()[0].0).2, 3);
+    assert!(rig.take_out().iter().any(|o| matches!(o, Out::Connected(_))));
+}
+
+#[test]
+fn a_phone_can_unpair_itself() {
+    let mut rig = Rig::new();
+    let mut phone = Phone::new(1);
+    rig.pair(&mut phone);
+    rig.connect(&mut phone, PadKind::Xbox360);
+
+    let reply = rig.feed(&phone.unpair(), phone.addr);
+    assert_eq!(rig.server.paired_count(), 0);
+    assert!(rig.pad(0).borrow().unplugged);
+    let expected = super::unpaired_packet(&phone.id, &phone.pair_key.unwrap());
+    assert_eq!(reply[0].0, expected, "signed with the old key, so the phone knows it was the real host");
+    // The phone repeats UNPAIR until it hears back; a repeat still gets the answer.
+    assert_eq!(rig.feed(&phone.unpair(), phone.addr)[0].0, expected);
+}
+
+#[test]
+fn a_forged_unpair_is_ignored() {
+    let mut rig = Rig::new();
+    let mut phone = Phone::new(1);
+    rig.pair(&mut phone);
+    let real_key = phone.pair_key;
+    phone.pair_key = Some([7; 32]);
+    assert!(rig.feed(&phone.unpair(), phone.addr).is_empty());
+    assert_eq!(rig.server.paired_count(), 1);
+    phone.pair_key = real_key;
+}
+
+#[test]
+fn bad_controller_lists_are_rejected() {
+    let mut rig = Rig::new();
+    let mut phone = Phone::new(1);
+    rig.pair(&mut phone);
+    rig.connect(&mut phone, PadKind::Xbox360);
+    let updates = rig.pad(0).borrow().updates.len();
+    rig.feed(&phone.input_pads(&[(4, pressed_a())]), phone.addr);
+    rig.feed(&phone.input_pads(&[(0, pressed_a()), (0, pressed_a())]), phone.addr);
+    assert_eq!(rig.pad(0).borrow().updates.len(), updates);
+    assert_eq!(rig.pad_count(), 1);
 }

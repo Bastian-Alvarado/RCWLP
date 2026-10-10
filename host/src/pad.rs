@@ -1,18 +1,20 @@
-//! Virtual controllers backed by the ViGEmBus driver: Xbox 360, or DualShock 4 with motion.
+//! Virtual controllers backed by the ViGEmBus driver: Xbox 360, or DualShock 4 with motion,
+//! touchpad and battery.
 
 use std::thread::JoinHandle;
 use std::time::Instant;
 
 use vigem_client::{Client, DualShock4Wired, TargetId, XButtons, XGamepad, Xbox360Wired};
 
-use crate::protocol::{PadKind, PadState};
-use crate::server::VirtualPad;
+use crate::protocol::{BATTERY_UNKNOWN, PadKind, PadState, TOUCHPAD_CLICK};
+use crate::server::{Feedback, VirtualPad};
 
 const ERROR_NO_MORE_ITEMS: u32 = 259;
+const PLAYER_CHECK_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 
 enum Target {
     Xbox360(Xbox360Wired<Client>),
-    DualShock4 { target: DualShock4Wired<Client>, started: Instant, counter: u8 },
+    DualShock4 { target: DualShock4Wired<Client>, started: Instant, counter: u8, touch: TouchTracker },
 }
 
 pub struct Pad {
@@ -21,32 +23,41 @@ pub struct Pad {
     _notifications: JoinHandle<()>,
     /// 1-based XInput player number for Xbox pads, 0 when unknown or not applicable.
     player: u8,
+    /// XInput assigns players a moment after plugging in and renumbers them as pads come and go.
+    player_checked: Instant,
     kind: PadKind,
 }
 
 impl Pad {
-    /// Plugs in a virtual controller. `on_rumble(large, small)` runs on the driver's
-    /// notification thread whenever a game changes the motors.
-    pub fn plug(kind: PadKind, mut on_rumble: impl FnMut(u8, u8) + Send + 'static) -> Result<Pad, vigem_client::Error> {
+    /// Plugs in a virtual controller. `on_feedback` runs on the driver's notification thread
+    /// whenever a game changes the motors, the DS4 lightbar or the Xbox player LED.
+    pub fn plug(kind: PadKind, mut on_feedback: impl FnMut(Feedback) + Send + 'static) -> Result<Pad, vigem_client::Error> {
         match kind {
             PadKind::Xbox360 => {
                 let mut target = Xbox360Wired::new(Client::connect()?, TargetId::XBOX360_WIRED);
                 target.plugin()?;
                 target.wait_ready()?;
                 let player = target.get_user_index().map(|i| i as u8 + 1).unwrap_or(0);
-                let notifications = target
-                    .request_notification()?
-                    .spawn_thread(move |_, n| on_rumble(n.large_motor, n.small_motor));
-                Ok(Pad { target: Target::Xbox360(target), _notifications: notifications, player, kind })
+                let notifications = target.request_notification()?.spawn_thread(move |_, n| {
+                    on_feedback(Feedback {
+                        large: n.large_motor,
+                        small: n.small_motor,
+                        // XInput moves players around as controllers come and go.
+                        player: Some(n.led_number.saturating_add(1)).filter(|p| *p <= 4),
+                        ..Default::default()
+                    })
+                });
+                Ok(Pad { target: Target::Xbox360(target), _notifications: notifications, player, player_checked: Instant::now(), kind })
             }
             PadKind::DualShock4 => {
                 let mut target = DualShock4Wired::new(Client::connect()?, TargetId::DUALSHOCK4_WIRED);
                 target.plugin()?;
                 target.wait_ready()?;
-                let notifications =
-                    target.request_notification()?.spawn_thread(move |n| on_rumble(n.large_motor, n.small_motor));
-                let target = Target::DualShock4 { target, started: Instant::now(), counter: 0 };
-                Ok(Pad { target, _notifications: notifications, player: 0, kind })
+                let notifications = target.request_notification()?.spawn_thread(move |n| {
+                    on_feedback(Feedback { large: n.large_motor, small: n.small_motor, lightbar: n.lightbar, player: None })
+                });
+                let target = Target::DualShock4 { target, started: Instant::now(), counter: 0, touch: TouchTracker::default() };
+                Ok(Pad { target, _notifications: notifications, player: 0, player_checked: Instant::now(), kind })
             }
         }
     }
@@ -61,22 +72,29 @@ impl VirtualPad for Pad {
         self.player
     }
 
-    fn update(&mut self, s: &PadState) {
+    fn update(&mut self, s: &PadState, battery: u8) {
         let result = match &mut self.target {
-            Target::Xbox360(target) => target.update(&XGamepad {
-                buttons: XButtons(s.buttons),
-                left_trigger: s.left_trigger,
-                right_trigger: s.right_trigger,
-                thumb_lx: s.thumb_lx,
-                thumb_ly: s.thumb_ly,
-                thumb_rx: s.thumb_rx,
-                thumb_ry: s.thumb_ry,
-            }),
-            Target::DualShock4 { target, started, counter } => {
+            Target::Xbox360(target) => {
+                if self.player_checked.elapsed() > PLAYER_CHECK_EVERY {
+                    self.player_checked = Instant::now();
+                    self.player = target.get_user_index().map_or(0, |i| i as u8 + 1);
+                }
+                target.update(&XGamepad {
+                    buttons: XButtons(s.buttons & !TOUCHPAD_CLICK),
+                    left_trigger: s.left_trigger,
+                    right_trigger: s.right_trigger,
+                    thumb_lx: s.thumb_lx,
+                    thumb_ly: s.thumb_ly,
+                    thumb_rx: s.thumb_rx,
+                    thumb_ry: s.thumb_ry,
+                })
+            }
+            Target::DualShock4 { target, started, counter, touch } => {
                 *counter = counter.wrapping_add(1);
                 // DS4 timestamps tick every 5.33 µs; Steam uses them to integrate the gyro.
                 let ticks = (started.elapsed().as_micros() * 3 / 16) as u16;
-                target.update_ex(&ds4_report(s, *counter, ticks))
+                touch.track(&s.touch);
+                target.update_ex(&ds4_report(s, *counter, ticks, battery, touch))
             }
         };
         match result {
@@ -85,6 +103,30 @@ impl VirtualPad for Pad {
             Ok(()) | Err(vigem_client::Error::WinError(ERROR_NO_MORE_ITEMS)) => {}
             Err(e) => eprintln!("Virtual controller update failed: {e}"),
         }
+    }
+}
+
+/// Gives each touch its own number, as a DS4 does: a finger keeps its id until it lifts, and
+/// the next touch gets the next id. Games use the ids to tell a new tap from a moving finger.
+#[derive(Default)]
+struct TouchTracker {
+    ids: [u8; 2],
+    down: [bool; 2],
+    next_id: u8,
+    /// Counts touchpad reports; Steam looks for it changing.
+    packet: u8,
+}
+
+impl TouchTracker {
+    fn track(&mut self, fingers: &[Option<(u16, u16)>; 2]) {
+        for (i, finger) in fingers.iter().enumerate() {
+            if finger.is_some() && !self.down[i] {
+                self.ids[i] = self.next_id;
+                self.next_id = (self.next_id + 1) & 0x7F;
+            }
+            self.down[i] = finger.is_some();
+        }
+        self.packet = self.packet.wrapping_add(1);
     }
 }
 
@@ -108,7 +150,7 @@ mod xb {
 
 /// Builds the 63-byte DS4 USB input report (without the report ID) from an Xbox-style state.
 /// Offsets follow DS4_REPORT_EX in ViGEmClient's Common.h.
-fn ds4_report(s: &PadState, counter: u8, timestamp: u16) -> [u8; 63] {
+fn ds4_report(s: &PadState, counter: u8, timestamp: u16, battery: u8, touch: &TouchTracker) -> [u8; 63] {
     let b = s.buttons;
     let has = |bit: u16| b & bit != 0;
 
@@ -154,7 +196,7 @@ fn ds4_report(s: &PadState, counter: u8, timestamp: u16) -> [u8; 63] {
     r[2] = stick(s.thumb_rx);
     r[3] = stick(s.thumb_ry.saturating_neg());
     r[4..6].copy_from_slice(&buttons.to_le_bytes());
-    r[6] = (counter & 0x3F) << 2 | has(xb::GUIDE) as u8;
+    r[6] = (counter & 0x3F) << 2 | (has(TOUCHPAD_CLICK) as u8) << 1 | has(xb::GUIDE) as u8;
     r[7] = s.left_trigger;
     r[8] = s.right_trigger;
     r[9..11].copy_from_slice(&timestamp.to_le_bytes());
@@ -162,15 +204,41 @@ fn ds4_report(s: &PadState, counter: u8, timestamp: u16) -> [u8; 63] {
         r[12 + i * 2..14 + i * 2].copy_from_slice(&s.gyro[i].to_le_bytes());
         r[18 + i * 2..20 + i * 2].copy_from_slice(&s.accel[i].to_le_bytes());
     }
-    r[29] = 0x1B; // battery: cable connected, full
-    r[32] = 1; // one touch packet...
-    r[34] = 0x80; // ...with both fingers up (the flag is active low), so no phantom touches
-    r[38] = 0x80;
-    r[43] = 0x80; // previous touch packets too
+    r[29] = ds4_battery(battery);
+    r[32] = 1; // one touch packet
+    r[33] = touch.packet;
+    for (i, finger) in s.touch.iter().enumerate() {
+        let at = 34 + i * 4;
+        match finger {
+            Some((x, y)) => {
+                let (x, y) = ((*x).min(1919), (*y).min(942));
+                r[at] = touch.ids[i]; // bit 7 clear: touching
+                r[at + 1] = x as u8;
+                r[at + 2] = (x >> 8) as u8 & 0x0F | (y as u8 & 0x0F) << 4;
+                r[at + 3] = (y >> 4) as u8;
+            }
+            None => r[at] = 0x80, // lifted (the flag is active low), so no phantom touches
+        }
+    }
+    r[43] = 0x80; // previous touch packets: nothing touching
     r[47] = 0x80;
     r[52] = 0x80;
     r[56] = 0x80;
     r
+}
+
+/// The DS4 battery byte: bits 0–3 level, bit 4 cable. On a cable the level runs 0–10 and 11
+/// means full; on battery it runs 0–9. A phone that says nothing shows as plugged in and full.
+fn ds4_battery(battery: u8) -> u8 {
+    let percent = battery & 0x7F;
+    if percent == BATTERY_UNKNOWN || percent > 100 {
+        return 0x1B;
+    }
+    if battery & 0x80 != 0 {
+        0x10 | if percent == 100 { 11 } else { percent / 10 }
+    } else {
+        (percent / 10).min(9)
+    }
 }
 
 fn stick(v: i16) -> u8 {
@@ -188,10 +256,12 @@ mod tests {
 
     #[test]
     fn neutral_report() {
-        let r = ds4_report(&PadState::default(), 0, 0);
+        let r = ds4_report(&PadState::default(), 0, 0, BATTERY_UNKNOWN, &TouchTracker::default());
         assert_eq!(&r[0..4], &[128, 128, 128, 128]);
         assert_eq!(u16::from_le_bytes([r[4], r[5]]), 8, "dpad none, nothing pressed");
         assert_eq!(r[6], 0);
+        assert_eq!(r[29], 0x1B, "unknown battery shows as plugged in and full");
+        assert_eq!((r[34], r[38]), (0x80, 0x80), "no fingers down");
     }
 
     #[test]
@@ -205,7 +275,7 @@ mod tests {
             accel: [0, 8192, -1],
             ..Default::default()
         };
-        let r = ds4_report(&s, 5, 0x1234);
+        let r = ds4_report(&s, 5, 0x1234, BATTERY_UNKNOWN, &TouchTracker::default());
         assert_eq!(r[0], 255);
         assert_eq!(r[1], 0, "stick up is 0 on a DS4");
         let buttons = u16::from_le_bytes([r[4], r[5]]);
@@ -220,5 +290,40 @@ mod tests {
         assert_eq!(i16::from_le_bytes([r[16], r[17]]), 1600);
         assert_eq!(i16::from_le_bytes([r[20], r[21]]), 8192);
         assert_eq!(i16::from_le_bytes([r[22], r[23]]), -1);
+    }
+
+    #[test]
+    fn touches_keep_their_id_until_lifted() {
+        let mut touch = TouchTracker::default();
+        let one = PadState { touch: [Some((1919, 942)), None], ..Default::default() };
+        touch.track(&one.touch);
+        let r = ds4_report(&one, 0, 0, BATTERY_UNKNOWN, &touch);
+        assert_eq!(r[33], 1, "touch packet counter");
+        assert_eq!(r[34], 0, "first touch: id 0, touching");
+        let x = r[35] as u16 | (r[36] as u16 & 0x0F) << 8;
+        let y = (r[36] as u16) >> 4 | (r[37] as u16) << 4;
+        assert_eq!((x, y), (1919, 942));
+        assert_eq!(r[38], 0x80, "second finger up");
+
+        let two = PadState { touch: [Some((10, 20)), Some((1000, 500))], ..Default::default() };
+        touch.track(&two.touch);
+        let r = ds4_report(&two, 0, 0, BATTERY_UNKNOWN, &touch);
+        assert_eq!(r[34], 0, "the first finger kept its id");
+        assert_eq!(r[38], 1, "the second finger got the next one");
+
+        touch.track(&[None, None]);
+        touch.track(&one.touch);
+        assert_eq!(ds4_report(&one, 0, 0, BATTERY_UNKNOWN, &touch)[34], 2, "a new touch, a new id");
+    }
+
+    #[test]
+    fn touchpad_click_and_battery() {
+        let s = PadState { buttons: TOUCHPAD_CLICK, ..Default::default() };
+        let r = ds4_report(&s, 0, 0, 0x80 | 55, &TouchTracker::default());
+        assert_eq!(r[6], 0b10, "touchpad click");
+        assert_eq!(r[29], 0x15, "charging, 50%");
+        assert_eq!(ds4_battery(0x80 | 100), 0x1B, "charging and full");
+        assert_eq!(ds4_battery(100), 9, "on battery the level tops out at 9");
+        assert_eq!(ds4_battery(7), 0);
     }
 }

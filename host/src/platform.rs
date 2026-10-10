@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::pad::{self, Pad};
 use crate::protocol::{self, PadKind};
-use crate::server::{self, Out, OutFn, Platform, RumbleFn, Server, VirtualPad};
+use crate::server::{self, FeedbackFn, Out, OutFn, Platform, Server, VirtualPad};
 use crate::store::Store;
 
 /// Upper bound on how long the loop sleeps waiting for a packet.
@@ -37,10 +37,10 @@ impl Platform for WindowsPlatform {
         self.socket.send_to(data, to).map(drop)
     }
 
-    fn plug(&self, kind: PadKind, mut on_rumble: RumbleFn) -> Result<Box<dyn VirtualPad>, String> {
+    fn plug(&self, kind: PadKind, mut on_feedback: FeedbackFn) -> Result<Box<dyn VirtualPad>, String> {
         let waker = self.waker.clone();
-        let pad = Pad::plug(kind, move |large, small| {
-            on_rumble(large, small);
+        let pad = Pad::plug(kind, move |feedback| {
+            on_feedback(feedback);
             let _ = waker.send(&[]);
         })
         .map_err(|e| e.to_string())?;
@@ -86,7 +86,7 @@ pub fn run(config: Config, mut out: OutFn, commands: Receiver<String>) -> Result
             Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {}
             Err(e) => server.event(format!("Receive error: {e}")),
         }
-        server.drain_rumble();
+        server.drain_feedback();
         // A closed command channel (stdin at EOF) just means no more commands.
         while let Ok(line) = commands.try_recv() {
             if !server.command(&line) {

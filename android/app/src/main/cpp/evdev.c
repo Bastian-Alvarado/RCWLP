@@ -109,3 +109,22 @@ JNIEXPORT jint JNICALL FN(read)(JNIEnv *env, jclass cls, jint fd, jintArray out,
     (*env)->SetIntArrayRegion(env, out, 0, count * 3, triples);
     return count;
 }
+
+static jstring string_ioctl(JNIEnv *env, int fd, unsigned long request) {
+    char buf[256] = {0};
+    if (ioctl(fd, request, buf) < 0) return NULL;
+    for (char *c = buf; *c; c++) {
+        if ((unsigned char)*c >= 0x80) *c = '?';
+    }
+    return (*env)->NewStringUTF(env, buf);
+}
+
+/** Where the device is attached, like "usb-xhci-hcd.0.auto-1/input0". Shared by a controller's interfaces. */
+JNIEXPORT jstring JNICALL FN(phys)(JNIEnv *env, jclass cls, jint fd) {
+    return string_ioctl(env, fd, EVIOCGPHYS(255));
+}
+
+/** A per-device id, usually the Bluetooth address; often empty for USB. */
+JNIEXPORT jstring JNICALL FN(uniq)(JNIEnv *env, jclass cls, jint fd) {
+    return string_ioctl(env, fd, EVIOCGUNIQ(255));
+}
