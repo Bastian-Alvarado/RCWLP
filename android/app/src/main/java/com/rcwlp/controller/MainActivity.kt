@@ -9,10 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.text.InputType
-import android.util.TypedValue
 import android.view.View
-import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -26,7 +23,8 @@ import kotlin.concurrent.thread
 /** Lists PCs on the network, pairs with new ones, and opens the controller screen. */
 class MainActivity : Activity(), InputManager.InputDeviceListener {
     private lateinit var store: HostStore
-    private lateinit var controllerLabel: TextView
+    private lateinit var controllerName: TextView
+    private lateinit var controllerHint: TextView
     private lateinit var scanStatus: TextView
     private lateinit var hostList: LinearLayout
     private lateinit var backgroundStatus: TextView
@@ -38,7 +36,8 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         store = HostStore(this)
-        controllerLabel = findViewById(R.id.controller_label)
+        controllerName = findViewById(R.id.controller_name)
+        controllerHint = findViewById(R.id.controller_hint)
         scanStatus = findViewById(R.id.scan_status)
         hostList = findViewById(R.id.host_list)
         findViewById<TextView>(R.id.version).text = "RCWLP ${BuildConfig.VERSION_NAME} · protocol v${Proto.VERSION}"
@@ -67,18 +66,18 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                 updateBackgroundStatus()
             }
         }
-        deadzoneSlider(R.id.stick_deadzone, R.id.stick_deadzone_label, "Stick dead zone", store.stickDeadzone) { store.stickDeadzone = it }
-        deadzoneSlider(R.id.trigger_deadzone, R.id.trigger_deadzone_label, "Trigger dead zone", store.triggerDeadzone) { store.triggerDeadzone = it }
+        deadzoneSlider(R.id.stick_deadzone, R.id.stick_deadzone_value, store.stickDeadzone) { store.stickDeadzone = it }
+        deadzoneSlider(R.id.trigger_deadzone, R.id.trigger_deadzone_value, store.triggerDeadzone) { store.triggerDeadzone = it }
         Shizuku.addBinderReceivedListenerSticky(shizukuChanged)
         Shizuku.addBinderDeadListener(shizukuChanged)
         Shizuku.addRequestPermissionResultListener(shizukuPermissionResult)
     }
 
     /** A 0–30% slider that saves as it moves; applies from the next connection. */
-    private fun deadzoneSlider(sliderId: Int, labelId: Int, title: String, value: Int, save: (Int) -> Unit) {
-        val label = findViewById<TextView>(labelId)
+    private fun deadzoneSlider(sliderId: Int, valueId: Int, value: Int, save: (Int) -> Unit) {
+        val label = findViewById<TextView>(valueId)
         fun show(v: Int) {
-            label.text = if (v == 0) "$title: off" else "$title: $v%"
+            label.text = if (v == 0) getString(R.string.deadzone_off) else "$v%"
         }
         show(value)
         findViewById<SeekBar>(sliderId).apply {
@@ -162,24 +161,31 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     override fun onInputDeviceChanged(deviceId: Int) = updateControllerLabel()
 
     private fun updateControllerLabel() {
-        val controller = GamepadMapper.connected().firstOrNull()
-        controllerLabel.text = controller?.let { "Controller: ${it.name}" } ?: "No controller detected. Attach one to use this phone as a gamepad."
+        val names = GamepadMapper.connected().map { it.name }
+        controllerName.text = names.joinToString("\n").ifEmpty { getString(R.string.no_controller) }
+        controllerHint.visibility = if (names.isEmpty()) View.VISIBLE else View.GONE
     }
 
     private fun scan() {
         if (scanning) return
         scanning = true
-        scanStatus.text = "Searching for PCs…"
+        showScanStatus("Searching for PCs…")
         thread {
             val result = runCatching { Discovery.scan(store.hosts()) }.getOrDefault(emptyList())
             runOnUiThread {
                 scanning = false
                 if (isDestroyed) return@runOnUiThread
                 found = result
-                scanStatus.text = if (result.isEmpty()) noPcsMessage(store.hosts()) else ""
+                showScanStatus(if (result.isEmpty()) noPcsMessage(store.hosts()) else "")
                 render()
             }
         }
+    }
+
+    /** The line under the PCs heading; it takes no room when there's nothing to say. */
+    private fun showScanStatus(text: String) {
+        scanStatus.text = text
+        scanStatus.visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
     }
 
     /** Says what to check, naming the address we tried when there's a paired PC. */
@@ -196,63 +202,70 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         for (h in paired) {
             val seen = online[h.idHex]
             val problem = seen?.incompatibility()
-            val detail = when {
-                problem != null -> "Paired · $problem"
-                seen != null -> "Paired · online · tap to connect"
-                else -> "Paired · no answer at ${h.address} · tap to try anyway"
+            val (badge, detail) = when {
+                problem != null -> Badge("Paired") to problem
+                seen != null -> Badge("Online", active = true) to "Tap to connect"
+                else -> Badge("Paired") to "No answer at ${h.address} · tap to try anyway"
             }
             val onClick = if (problem != null) ({ toast(problem) }) else ({ startController(h) })
-            addRow(h.name, "$detail\nLong-press to forget", onClick) { confirmForget(h) }
+            addRow(h.name, badge, "$detail\nLong-press to forget", onClick) { confirmForget(h) }
         }
         for (f in found.filter { f -> paired.none { it.idHex == f.idHex } }) {
             val problem = f.incompatibility()
             if (problem == null) {
-                addRow(f.name, "${f.address} · tap to pair", { startPairing(f) }, null)
+                addRow(f.name, Badge("New", active = true), "${f.address} · tap to pair", { startPairing(f) }, null)
             } else {
-                addRow(f.name, "${f.address} · $problem", { toast(problem) }, null)
+                addRow(f.name, Badge("New"), "${f.address} · $problem", { toast(problem) }, null)
             }
         }
     }
 
-    private fun addRow(title: String, detail: String, onClick: () -> Unit, onLongClick: (() -> Unit)?) {
-        val pad = dp(16)
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-            isClickable = true
-            val ripple = TypedValue()
-            theme.resolveAttribute(android.R.attr.selectableItemBackground, ripple, true)
-            setBackgroundResource(ripple.resourceId)
-            setOnClickListener { onClick() }
-            if (onLongClick != null) setOnLongClickListener { onLongClick(); true }
+    /** The small label at the end of a PC's row; rose when there's something to tap for. */
+    private data class Badge(val text: String, val active: Boolean = false)
+
+    private fun addRow(title: String, badge: Badge, detail: String, onClick: () -> Unit, onLongClick: (() -> Unit)?) {
+        val row = layoutInflater.inflate(R.layout.item_host, hostList, false)
+        row.findViewById<TextView>(R.id.name).text = title
+        row.findViewById<TextView>(R.id.detail).text = detail
+        row.findViewById<TextView>(R.id.badge).apply {
+            text = badge.text
+            setBackgroundResource(if (badge.active) R.drawable.bg_badge_active else R.drawable.bg_badge)
+            setTextColor(getColor(if (badge.active) R.color.rose else R.color.zinc_400))
         }
-        row.addView(TextView(this).apply {
-            text = title
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
-        })
-        row.addView(TextView(this).apply {
-            text = detail
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            alpha = 0.7f
-        })
-        hostList.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.setOnClickListener { onClick() }
+        if (onLongClick != null) row.setOnLongClickListener { onLongClick(); true }
+        hostList.addView(row)
     }
+
+    /** A dialog laid out like the rest of the app: [body] gets the message, and the code or field when used. */
+    private fun dialog(title: String, message: String): Pair<AlertDialog.Builder, View> {
+        val body = layoutInflater.inflate(R.layout.dialog_body, null)
+        body.findViewById<TextView>(R.id.message).text = message
+        return AlertDialog.Builder(this).setTitle(title).setView(body) to body
+    }
+
+    /** Shows [builder]'s dialog with SimonSays's quiet grey for the button that backs out. */
+    private fun show(builder: AlertDialog.Builder): AlertDialog =
+        builder.show().also { it.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(getColor(R.color.zinc_400)) }
 
     private fun startPairing(host: FoundHost) {
         val pairing = Pairing(store, host, deviceName())
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Pairing with ${host.name}")
-            .setMessage("Contacting the PC…")
-            .setNegativeButton("Cancel") { _, _ -> pairing.cancelled = true }
-            .setCancelable(false)
-            .show()
+        val (builder, body) = dialog("Pairing with ${host.name}", "Contacting the PC…")
+        val dialog = show(
+            builder
+                .setNegativeButton("Cancel") { _, _ -> pairing.cancelled = true }
+                .setCancelable(false),
+        )
         thread {
             val result = pairing.run { code ->
                 runOnUiThread {
-                    dialog.setMessage(
-                        "Code: %03d %03d\n\nType this code in the RCWLP host window on your PC to finish pairing."
-                            .format(code / 1000, code % 1000),
-                    )
+                    body.findViewById<View>(R.id.code_label).visibility = View.VISIBLE
+                    body.findViewById<TextView>(R.id.code).apply {
+                        text = "%03d %03d".format(code / 1000, code % 1000)
+                        visibility = View.VISIBLE
+                    }
+                    body.findViewById<TextView>(R.id.message).text =
+                        "Type this code in the RCWLP window on your PC to finish pairing."
                 }
             }
             runOnUiThread {
@@ -274,17 +287,17 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     }
 
     private fun askForAddress() {
-        val input = EditText(this).apply {
+        val (builder, body) = dialog("Add PC by IP address", "The PC's local IP address, optionally with :port.")
+        val input = body.findViewById<EditText>(R.id.input).apply {
             hint = "192.168.1.20"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            visibility = View.VISIBLE
         }
-        AlertDialog.Builder(this)
-            .setTitle("Add PC by IP address")
-            .setMessage("The PC's local IP address, optionally with :port.")
-            .setView(input)
-            .setPositiveButton("Add") { _, _ -> probe(input.text.toString().trim()) }
-            .setNegativeButton("Cancel", null)
-            .show()
+        show(
+            builder
+                .setPositiveButton("Add") { _, _ -> probe(input.text.toString().trim()) }
+                .setNegativeButton("Cancel", null),
+        )
+        input.requestFocus()
     }
 
     private fun probe(text: String) {
@@ -310,9 +323,8 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     }
 
     private fun confirmForget(host: PairedHost) {
-        AlertDialog.Builder(this)
-            .setTitle("Forget ${host.name}?")
-            .setMessage("You'll need to pair again to use it. The PC is asked to forget this phone too.")
+        val (builder, _) = dialog("Forget ${host.name}?", "You'll need to pair again to use it. The PC is asked to forget this phone too.")
+        show(builder
             .setPositiveButton("Forget") { _, _ ->
                 thread {
                     // Ask the PC first: the request is signed with the pair key, which goes away next.
@@ -328,13 +340,12 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                     }
                 }
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+            .setNegativeButton("Cancel", null))
     }
 
     private fun startController(host: PairedHost) {
         if (store.backgroundMode && ShizukuState.current(this) != ShizukuState.READY) {
-            toast("Background mode needs Shizuku first. See the steps under the checkbox, or turn background mode off.")
+            toast("Background mode needs Shizuku first. See the steps under \"Keep working when locked\", or turn it off.")
             return
         }
         if (GamepadMapper.connected().isEmpty()) toast("No controller detected yet. Attach one and it will be picked up.")
@@ -345,6 +356,4 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         Settings.Global.getString(contentResolver, Settings.Global.DEVICE_NAME) ?: "${Build.MANUFACTURER} ${Build.MODEL}"
 
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 }

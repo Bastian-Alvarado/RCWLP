@@ -13,7 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 vigem-client = { path = "vendor/vigem-client", features = ["unstable_xtarget_notification", "unstable_ds4"] }
-winapi = { version = "0.3", features = ["minwinbase", "sysinfoapi", "winreg", "winerror", "xinput", "synchapi", "handleapi", "errhandlingapi", "shellapi", "winuser"] }
+winapi = { version = "0.3", features = ["minwinbase", "sysinfoapi", "winreg", "winerror", "xinput", "synchapi", "handleapi", "errhandlingapi", "shellapi", "winuser", "wingdi", "dwmapi", "uxtheme", "commctrl", "libloaderapi"] }
 
 [dev-dependencies]
 hidapi = "2"

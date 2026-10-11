@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The inside of every dialog: a message, then a pairing code or an address field when needed. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingHorizontal="24dp"
+    android:paddingTop="8dp">
+
+    <TextView
+        android:id="@+id/code_label"
+        style="@style/RCWLP.Label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/pairing_code"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/code"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="12dp"
+        android:fontFamily="@font/montserrat_black"
+        android:letterSpacing="0.06"
+        android:textColor="@color/rose"
+        android:textSize="40sp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/message"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:lineSpacingMultiplier="1.2"
+        android:textColor="@color/zinc_400"
+        android:textSize="14sp" />
+
+    <EditText
+        android:id="@+id/input"
+        style="@style/RCWLP.Input"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:importantForAutofill="no"
+        android:inputType="textUri"
+        android:visibility="gone" />
+</LinearLayout>

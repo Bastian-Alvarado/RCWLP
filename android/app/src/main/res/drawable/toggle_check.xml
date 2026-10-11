@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The check at the end of a tile, shown only when it's on. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@drawable/ic_check" android:state_checked="true" />
+    <item>
+        <shape>
+            <size android:width="18dp" android:height="18dp" />
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+</selector>

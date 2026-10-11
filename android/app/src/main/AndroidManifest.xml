@@ -30,7 +30,7 @@
         android:enableOnBackInvokedCallback="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@style/Theme.RCWLP">
 
         <!-- configChanges: attaching a controller changes keyboard/navigation config,
              which would otherwise recreate the activity and drop the connection. -->
@@ -48,7 +48,8 @@
             android:name=".ControllerActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|uiMode"
             android:exported="false"
-            android:launchMode="singleTop" />
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.RCWLP.Controller" />
 
         <service
             android:name=".ControllerService"

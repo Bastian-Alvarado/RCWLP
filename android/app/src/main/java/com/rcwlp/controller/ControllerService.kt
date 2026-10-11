@@ -33,6 +33,8 @@ class ControllerService : Service(), ControllerSession.Listener {
         val hostName: String = "",
         val message: String = "",
         val controllers: String = "",
+        /** Connected to the PC right now; only meaningful while [active]. */
+        val connected: Boolean = false,
     )
 
     private lateinit var store: HostStore
@@ -243,7 +245,7 @@ class ControllerService : Service(), ControllerSession.Listener {
     /** The in-app status, with the round trip while connected. The notification keeps the plain state. */
     private fun publishState() {
         val latency = session?.latencyMs?.takeIf { connected }
-        publish(status.copy(message = if (latency != null) "$stateText · $latency ms" else stateText))
+        publish(status.copy(message = if (latency != null) "$stateText · $latency ms" else stateText, connected = connected))
     }
 
     override fun onFeedback(pads: List<Feedback>) {
@@ -276,6 +278,7 @@ class ControllerService : Service(), ControllerSession.Listener {
         )
         val builder = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_controller)
+            .setColor(getColor(R.color.rose))
             .setContentTitle(title)
             .setContentText(text)
             .setContentIntent(open)

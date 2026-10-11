@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SimonSays's default theme, and only that one: there are no theme settings. -->
+<resources>
+    <style name="Theme.RCWLP" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/page</item>
+        <item name="android:colorBackground">@color/page</item>
+        <item name="android:statusBarColor">@color/page</item>
+        <item name="android:navigationBarColor">@color/page</item>
+        <item name="android:colorPrimary">@color/rose</item>
+        <item name="android:colorPrimaryDark">@color/page</item>
+        <item name="android:colorAccent">@color/rose</item>
+        <item name="android:colorControlNormal">@color/zinc_600</item>
+        <item name="android:colorControlHighlight">@color/rose_pressed</item>
+        <item name="android:textColorPrimary">@color/zinc_100</item>
+        <item name="android:textColorSecondary">@color/zinc_400</item>
+        <item name="android:textColorHint">@color/zinc_600</item>
+        <!-- Every text in the app defaults to Montserrat, as in SimonSays. -->
+        <item name="android:fontFamily">@font/montserrat_medium</item>
+        <item name="android:alertDialogTheme">@style/Theme.RCWLP.Dialog</item>
+    </style>
+
+    <!-- The controller screen: nearly black, so it stays dark when it dims. -->
+    <style name="Theme.RCWLP.Controller">
+        <item name="android:windowBackground">@drawable/bg_screen</item>
+        <item name="android:statusBarColor">@color/screen</item>
+        <item name="android:navigationBarColor">@color/screen</item>
+    </style>
+
+    <style name="Theme.RCWLP.Dialog" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/bg_dialog</item>
+        <item name="android:colorBackground">@color/zinc_900</item>
+        <item name="android:colorAccent">@color/rose</item>
+        <item name="android:colorControlNormal">@color/zinc_600</item>
+        <item name="android:colorControlHighlight">@color/rose_pressed</item>
+        <item name="android:textColorPrimary">@color/zinc_100</item>
+        <item name="android:textColorSecondary">@color/zinc_400</item>
+        <item name="android:textColorHint">@color/zinc_600</item>
+        <item name="android:fontFamily">@font/montserrat_medium</item>
+        <item name="android:windowTitleStyle">@style/RCWLP.DialogTitle</item>
+        <item name="android:buttonBarButtonStyle">@style/RCWLP.DialogButton</item>
+    </style>
+
+    <style name="RCWLP.DialogTitle">
+        <item name="android:textAppearance">@android:style/TextAppearance.Material.DialogWindowTitle</item>
+        <item name="android:fontFamily">@font/montserrat_black</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:letterSpacing">0.05</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:textColor">@color/zinc_100</item>
+    </style>
+
+    <style name="RCWLP.DialogButton" parent="@android:style/Widget.Material.Button.Borderless.Colored">
+        <item name="android:fontFamily">@font/montserrat_extrabold</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:textColor">@color/rose</item>
+    </style>
+</resources>

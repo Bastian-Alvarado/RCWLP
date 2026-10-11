@@ -106,7 +106,7 @@ unpairs the phone on the PC when the PC is reachable.
 ## Background mode (screen off, other apps)
 
 Android normally only gives controller input to the app on screen. With **Keep working
-when locked or in other apps** ticked, RCWLP reads the controller directly from the
+when locked** turned on, RCWLP reads the controller directly from the
 kernel (`/dev/input`) instead, through [Shizuku](https://shizuku.rikka.app/), and
 *grabs* it. The phone then ignores the controller entirely (B doesn't go Back, presses
 don't wake the screen), and you can lock the phone or use other apps while it drives the
@@ -118,7 +118,7 @@ Setup, once per phone:
 1. Install Shizuku and start it (Developer options → Wireless debugging, then "Start" in
    Shizuku). On phones without root this is needed again after every reboot. Over adb:
    `adb shell $(dirname $(pm path moe.shizuku.privileged.api | cut -d: -f2))/lib/arm64/libshizuku.so`.
-2. In RCWLP, tick the checkbox and tap **Allow in Shizuku**.
+2. In RCWLP, turn on **Keep working when locked** and tap **Allow in Shizuku**.
 
 How it works: `ControllerService` (a foreground service with wake and Wi-Fi locks) asks
 Shizuku to start `EvdevService` in a separate process with adb privileges. That process
@@ -157,7 +157,7 @@ buttons. Two things help:
   Changes apply from the next connection.
 - **Rumble** plays on the controller if Android exposes its motors (most Bluetooth pads
   on Android 12+), otherwise on the phone.
-- **PS4 mode (gyro aiming).** Tick *PS4 controller mode* in the app and the PC gets a
+- **PS4 mode (gyro aiming).** Turn on *PS4 controller mode* in the app and the PC gets a
   DualShock 4 instead of an Xbox pad, fed by the phone's gyroscope and accelerometer.
   Steam Input can then do gyro aiming: in a game's controller settings, set gyro to
   "As Mouse" or "As Joystick". Few games read DS4 motion on their own, so Steam is the
@@ -180,9 +180,17 @@ buttons. Two things help:
 - `cargo run --example ds4_watch` reads the virtual DualShock 4 the way a game does and prints
   its buttons, sticks, touchpad and battery (`--motion` adds gyro and accelerometer); `--feedback R G B LARGE SMALL` sends a lightbar colour and
   rumble like a game, to check they reach the phone.
-- The host's icon is drawn by `host/assets/make-icons.ps1`, which writes `tray.png` and
-  `rcwlp.ico`; `host/build.rs` embeds the `.ico` and version info in the programs. The
-  installer script is `installer/rcwlp-host.iss`.
+- Both apps use SimonSays's default theme: rose (`#F43F5E`) on dark zinc, in Montserrat, with
+  SimonSays's hexagon logo holding a gamepad. On the phone it lives in
+  `android/app/src/main/res/values/` (`colors.xml`, `themes.xml`, `styles.xml`); on the PC,
+  in `host/src/bin/rcwlp-tray/theme.rs`, which paints the tray app's windows itself since
+  Windows draws its standard controls light. There is one theme and no setting for it.
+- The icon is drawn by `host/assets/make-icons.ps1`, which writes `host/assets/rcwlp.ico`
+  and the installer's `installer/wizard-*.png`; `host/build.rs` embeds the `.ico` and version
+  info in the programs. The installer script is `installer/rcwlp-host.iss`.
+- The fonts are Montserrat and JetBrains Mono, the Latin sets from Fontsource, converted from
+  WOFF to TTF with `fonts/woff-to-ttf.mjs`. Both are under the SIL Open Font License, whose
+  text is in `fonts/`.
 - Turn on the pre-commit hook once per clone with `git config core.hooksPath .githooks`. It
   runs whichever of the two test suites the staged files affect.
 
@@ -216,4 +224,5 @@ key, so without it, people would have to uninstall and pair again to update. Rai
 Source available under the Apache License 2.0 with the **Commons Clause** (see
 [LICENSE](LICENSE)). In plain words: use it, change it and share it freely, as long as the
 license goes with it; but don't sell it, or sell a product, hosting, setup or support whose
-value is mainly RCWLP itself. `host/vendor/vigem-client` keeps its own MIT license.
+value is mainly RCWLP itself. `host/vendor/vigem-client` keeps its own MIT license, and the
+fonts (Montserrat, JetBrains Mono) their SIL Open Font License, in `fonts/`.

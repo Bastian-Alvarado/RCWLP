@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The controller screen: nearly black with a faint rose glow, like SimonSays's splash. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape>
+            <solid android:color="@color/screen" />
+        </shape>
+    </item>
+    <item>
+        <shape>
+            <gradient
+                android:type="radial"
+                android:centerX="0.5"
+                android:centerY="0.45"
+                android:gradientRadius="60%p"
+                android:startColor="#1FF43F5E"
+                android:endColor="#00F43F5E" />
+        </shape>
+    </item>
+</layer-list>

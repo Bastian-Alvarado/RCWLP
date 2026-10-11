@@ -32,7 +32,11 @@ SetupIconFile=..\host\assets\rcwlp.ico
 UninstallDisplayIcon={app}\{#TrayExe}
 UninstallDisplayName={#AppName}
 VersionInfoVersion={#AppVersion}
-WizardStyle=modern
+; SimonSays's look: dark, with the RCWLP tile (images drawn by host\assets\make-icons.ps1).
+WizardStyle=modern dark
+WizardBackColor=#292929
+WizardImageFile=wizard-164.png,wizard-328.png
+WizardSmallImageFile=wizard-small-58.png,wizard-small-116.png
 Compression=lzma2
 SolidCompression=yes
 ; The tray app is stopped by the [Code] below; nothing else of ours should be running.

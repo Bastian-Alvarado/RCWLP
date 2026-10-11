@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The pieces of SimonSays's look: panels, their titles, labels, buttons and tiles. -->
+<resources>
+    <!-- The root the styles below are named after. -->
+    <style name="RCWLP" />
+
+    <style name="RCWLP.Panel">
+        <item name="android:background">@drawable/bg_panel</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:padding">20dp</item>
+        <item name="android:layout_marginTop">16dp</item>
+    </style>
+
+    <!-- A panel's heading: a rose icon and a small, heavy, spaced-out title. -->
+    <style name="RCWLP.PanelTitle">
+        <item name="android:fontFamily">@font/montserrat_black</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:letterSpacing">0.1</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:textColor">@color/zinc_300</item>
+        <item name="android:drawablePadding">10dp</item>
+        <item name="android:gravity">center_vertical</item>
+    </style>
+
+    <!-- Small labels, like SimonSays's section names. -->
+    <style name="RCWLP.Label">
+        <item name="android:fontFamily">@font/montserrat_black</item>
+        <item name="android:textSize">10sp</item>
+        <item name="android:letterSpacing">0.1</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:textColor">@color/zinc_500</item>
+    </style>
+
+    <style name="RCWLP.Hint">
+        <item name="android:fontFamily">@font/montserrat_medium</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:lineSpacingMultiplier">1.2</item>
+        <item name="android:textColor">@color/zinc_500</item>
+    </style>
+
+    <style name="RCWLP.Title">
+        <item name="android:fontFamily">@font/montserrat_bold</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textColor">@color/zinc_100</item>
+    </style>
+
+    <style name="RCWLP.Button">
+        <item name="android:fontFamily">@font/montserrat_extrabold</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:letterSpacing">0.02</item>
+        <item name="android:textColor">#FFFFFF</item>
+        <item name="android:gravity">center</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:paddingStart">16dp</item>
+        <item name="android:paddingEnd">16dp</item>
+        <item name="android:paddingTop">10dp</item>
+        <item name="android:paddingBottom">10dp</item>
+        <item name="android:drawablePadding">8dp</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+
+    <style name="RCWLP.Button.Primary">
+        <item name="android:background">@drawable/bg_button_primary</item>
+    </style>
+
+    <style name="RCWLP.Button.Secondary">
+        <item name="android:background">@drawable/bg_button_secondary</item>
+    </style>
+
+    <!-- An on/off setting as a SimonSays tile, with a check when it's on. -->
+    <style name="RCWLP.Toggle">
+        <item name="android:button">@null</item>
+        <item name="android:background">@drawable/bg_toggle</item>
+        <item name="android:drawableEnd">@drawable/toggle_check</item>
+        <item name="android:drawablePadding">12dp</item>
+        <item name="android:paddingStart">16dp</item>
+        <item name="android:paddingEnd">16dp</item>
+        <item name="android:paddingTop">14dp</item>
+        <item name="android:paddingBottom">14dp</item>
+        <item name="android:fontFamily">@font/montserrat_black</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:letterSpacing">0.08</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:textColor">@color/toggle_text</item>
+    </style>
+
+    <style name="RCWLP.Badge">
+        <item name="android:fontFamily">@font/montserrat_black</item>
+        <item name="android:textSize">9sp</item>
+        <item name="android:letterSpacing">0.1</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
+        <item name="android:paddingTop">3dp</item>
+        <item name="android:paddingBottom">3dp</item>
+    </style>
+
+    <style name="RCWLP.Slider">
+        <item name="android:progressTint">@color/rose</item>
+        <item name="android:thumbTint">@color/rose</item>
+        <item name="android:progressBackgroundTint">@color/zinc_700</item>
+        <item name="android:paddingStart">8dp</item>
+        <item name="android:paddingEnd">8dp</item>
+        <item name="android:paddingTop">10dp</item>
+        <item name="android:paddingBottom">10dp</item>
+    </style>
+
+    <style name="RCWLP.Input">
+        <item name="android:background">@drawable/bg_input</item>
+        <item name="android:fontFamily">@font/montserrat_bold</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textColor">#FFFFFF</item>
+        <item name="android:textColorHint">@color/zinc_600</item>
+        <item name="android:paddingStart">16dp</item>
+        <item name="android:paddingEnd">16dp</item>
+        <item name="android:paddingTop">12dp</item>
+        <item name="android:paddingBottom">12dp</item>
+    </style>
+</resources>

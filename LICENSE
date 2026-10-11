@@ -29,6 +29,11 @@ mainly RCWLP itself.
 host/vendor/vigem-client is a modified copy of the vigem-client crate by
 Casper, under the MIT license in host/vendor/vigem-client/license.txt.
 
+The fonts Montserrat (android/app/src/main/res/font/montserrat_*.ttf,
+host/assets/fonts/montserrat_*.ttf) and JetBrains Mono (jetbrains_mono.ttf in
+the same folders) are under the SIL Open Font License 1.1, in
+fonts/Montserrat-OFL.txt and fonts/JetBrainsMono-OFL.txt.
+
 ---------------------------------------------------------------------------
 
 

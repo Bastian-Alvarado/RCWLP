@@ -3,6 +3,8 @@
 
 #![windows_subsystem = "windows"]
 
+mod theme;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Sender};
@@ -15,8 +17,6 @@ use rcwlp_host::platform::{self, Config};
 use rcwlp_host::protocol;
 use rcwlp_host::server::{self, Out};
 
-const ICON: &[u8] = include_bytes!("../../assets/tray.png");
-
 /// Everything the server said since the window last looked, plus how the server ended.
 #[derive(Default)]
 struct Inbox {
@@ -26,20 +26,27 @@ struct Inbox {
 
 struct Tray {
     owner: nwg::MessageWindow,
+    /// The icon at the small size (tray, title bars) and the large one (notifications).
     icon: nwg::Icon,
+    icon_big: nwg::Icon,
     tray: nwg::TrayNotification,
     menu: nwg::Menu,
     menu_show: nwg::MenuItem,
     menu_autostart: nwg::MenuItem,
     menu_quit: nwg::MenuItem,
     notice: nwg::Notice,
+    fonts: theme::Fonts,
+    /// The custom painting bound to the windows and buttons below.
+    _looks: Vec<nwg::RawEventHandler>,
 
     log_window: nwg::Window,
+    log_title: nwg::Label,
     log: nwg::TextBox,
     command: nwg::TextInput,
     run: nwg::Button,
 
     pair_window: nwg::Window,
+    pair_title: nwg::Label,
     pair_label: nwg::Label,
     pair_code: nwg::TextInput,
     pair_accept: nwg::Button,
@@ -53,8 +60,10 @@ struct Tray {
 fn main() {
     nwg::init().expect("start the Windows UI");
     let _ = nwg::Font::set_global_family("Segoe UI");
+    let verbose = std::env::args().any(|a| a == "--verbose" || a == "-v");
+    let port = port_arg().unwrap_or(protocol::DEFAULT_PORT);
     // Starting it from the Start Menu while it already runs at sign-in shouldn't start a second one.
-    let Some(_instance) = SingleInstance::claim() else {
+    let Some(_instance) = SingleInstance::claim(port) else {
         nwg::message(&nwg::MessageParams {
             title: "RCWLP host",
             content: "RCWLP host is already running. Its icon is in the notification area, next to the clock \
@@ -64,8 +73,6 @@ fn main() {
         });
         return;
     };
-    let verbose = std::env::args().any(|a| a == "--verbose" || a == "-v");
-    let port = port_arg().unwrap_or(protocol::DEFAULT_PORT);
 
     let (commands, command_rx) = mpsc::channel();
     let inbox = Arc::new(Mutex::new(Inbox::default()));
@@ -101,15 +108,20 @@ fn main() {
     handlers.iter().for_each(nwg::unbind_event_handler);
 }
 
-/// A named mutex held while this tray app runs, so a second copy can tell.
+/// A named mutex held while this tray app runs, so a second copy on the same port can tell.
 struct SingleInstance(winapi::shared::ntdef::HANDLE);
 
 impl SingleInstance {
-    fn claim() -> Option<SingleInstance> {
+    fn claim(port: u16) -> Option<SingleInstance> {
         use winapi::shared::winerror::ERROR_ALREADY_EXISTS;
         use winapi::um::errhandlingapi::GetLastError;
         use winapi::um::synchapi::CreateMutexW;
-        let name: Vec<u16> = "Local\\RCWLP-host-tray".encode_utf16().chain(Some(0)).collect();
+        // Hosts on different ports don't get in each other's way.
+        let name = match port {
+            protocol::DEFAULT_PORT => "Local\\RCWLP-host-tray".to_string(),
+            _ => format!("Local\\RCWLP-host-tray-{port}"),
+        };
+        let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
         // Safety: plain Win32 calls; the handle is closed in Drop.
         unsafe {
             let handle = CreateMutexW(std::ptr::null_mut(), 0, name.as_ptr());
@@ -155,18 +167,24 @@ fn port_arg() -> Option<u16> {
 fn build(commands: Sender<String>, inbox: Arc<Mutex<Inbox>>) -> Result<Tray, nwg::NwgError> {
     let mut t = Tray {
         owner: Default::default(),
-        icon: Default::default(),
+        icon: theme::app_icon(false),
+        icon_big: theme::app_icon(true),
         tray: Default::default(),
         menu: Default::default(),
         menu_show: Default::default(),
         menu_autostart: Default::default(),
         menu_quit: Default::default(),
         notice: Default::default(),
+        // Before any control is made, so they all get Montserrat.
+        fonts: theme::Fonts::load(),
+        _looks: Vec::new(),
         log_window: Default::default(),
+        log_title: Default::default(),
         log: Default::default(),
         command: Default::default(),
         run: Default::default(),
         pair_window: Default::default(),
+        pair_title: Default::default(),
         pair_label: Default::default(),
         pair_code: Default::default(),
         pair_accept: Default::default(),
@@ -177,7 +195,6 @@ fn build(commands: Sender<String>, inbox: Arc<Mutex<Inbox>>) -> Result<Tray, nwg
     };
 
     nwg::MessageWindow::builder().build(&mut t.owner)?;
-    nwg::Icon::builder().source_bin(Some(ICON)).size(Some((32, 32))).build(&mut t.icon)?;
     nwg::TrayNotification::builder()
         .parent(&t.owner)
         .icon(Some(&t.icon))
@@ -193,7 +210,8 @@ fn build(commands: Sender<String>, inbox: Arc<Mutex<Inbox>>) -> Result<Tray, nwg
     nwg::MenuItem::builder().text("Quit").parent(&t.menu).build(&mut t.menu_quit)?;
     nwg::Notice::builder().parent(&t.owner).build(&mut t.notice)?;
 
-    let (w, h) = (640, 400);
+    // Text fields sit inside the rounded frames their window draws around them (theme::FIELD_PAD).
+    let (w, h) = (680, 460);
     nwg::Window::builder()
         .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::MINIMIZE_BOX)
         .size((w, h))
@@ -201,27 +219,30 @@ fn build(commands: Sender<String>, inbox: Arc<Mutex<Inbox>>) -> Result<Tray, nwg
         .title("RCWLP host")
         .icon(Some(&t.icon))
         .build(&mut t.log_window)?;
+    heading(&t.log_window, "Host log", w, &t.fonts, &mut t.log_title)?;
     nwg::TextBox::builder()
         .parent(&t.log_window)
-        .position((8, 8))
-        .size((w - 16, h - 56))
+        .position((34, 54))
+        .size((w - 68, h - 140))
         .readonly(true)
+        .font(Some(&t.fonts.mono))
         .flags(nwg::TextBoxFlags::VISIBLE | nwg::TextBoxFlags::VSCROLL | nwg::TextBoxFlags::AUTOVSCROLL)
         .build(&mut t.log)?;
     nwg::TextInput::builder()
         .parent(&t.log_window)
-        .position((8, h - 40))
-        .size((w - 104, 28))
+        .position((34, h - 52))
+        .size((w - 68 - 116, 30))
+        .background_color(Some(theme::FIELD))
         .placeholder_text(Some("list, forget <n>, or a pairing code"))
         .build(&mut t.command)?;
     nwg::Button::builder()
         .parent(&t.log_window)
         .text("Run")
-        .position((w - 88, h - 41))
-        .size((80, 30))
+        .position((w - 24 - 96, h - 59))
+        .size((96, 44))
         .build(&mut t.run)?;
 
-    let (w, h) = (380, 170);
+    let (w, h) = (420, 236);
     nwg::Window::builder()
         .flags(nwg::WindowFlags::WINDOW)
         .size((w, h))
@@ -230,17 +251,53 @@ fn build(commands: Sender<String>, inbox: Arc<Mutex<Inbox>>) -> Result<Tray, nwg
         .icon(Some(&t.icon))
         .topmost(true)
         .build(&mut t.pair_window)?;
-    nwg::Label::builder().parent(&t.pair_window).position((16, 12)).size((w - 32, 52)).build(&mut t.pair_label)?;
+    heading(&t.pair_window, "Pairing request", w, &t.fonts, &mut t.pair_title)?;
+    nwg::Label::builder()
+        .parent(&t.pair_window)
+        .text("")
+        .position((24, 46))
+        .size((w - 48, 44))
+        .v_align(nwg::VTextAlign::Top)
+        .background_color(Some(theme::PAGE))
+        .build(&mut t.pair_label)?;
     nwg::TextInput::builder()
         .parent(&t.pair_window)
-        .position((16, 72))
-        .size((140, 30))
+        .position((34, 106))
+        .size((170, 34))
         .limit(7)
+        .font(Some(&t.fonts.code))
+        .background_color(Some(theme::FIELD))
         .placeholder_text(Some("123 456"))
         .build(&mut t.pair_code)?;
-    nwg::Button::builder().parent(&t.pair_window).text("Accept").position((w - 196, 116)).size((84, 32)).build(&mut t.pair_accept)?;
-    nwg::Button::builder().parent(&t.pair_window).text("Reject").position((w - 104, 116)).size((84, 32)).build(&mut t.pair_reject)?;
+    let button = |text, x, b: &mut nwg::Button| {
+        nwg::Button::builder().parent(&t.pair_window).text(text).position((x, h - 60)).size((100, 40)).build(b)
+    };
+    button("Accept", w - 24 - 100 - 10 - 100, &mut t.pair_accept)?;
+    button("Reject", w - 24 - 100, &mut t.pair_reject)?;
+
+    let mut looks = theme::style_window(&t.log_window, &[&t.log.handle, &t.command.handle], &[(&t.log_title, theme::ROSE)]);
+    looks.extend(theme::style_window(
+        &t.pair_window,
+        &[&t.pair_code.handle],
+        &[(&t.pair_title, theme::ROSE), (&t.pair_label, theme::TEXT)],
+    ));
+    looks.push(theme::style_button(&t.run, true, &t.fonts.button));
+    looks.push(theme::style_button(&t.pair_accept, true, &t.fonts.button));
+    looks.push(theme::style_button(&t.pair_reject, false, &t.fonts.button));
+    t._looks = looks;
     Ok(t)
+}
+
+/// A window's title inside it, small, heavy and in capitals, as SimonSays heads its panels.
+fn heading(window: &nwg::Window, text: &str, w: i32, fonts: &theme::Fonts, label: &mut nwg::Label) -> Result<(), nwg::NwgError> {
+    nwg::Label::builder()
+        .parent(window)
+        .text(&text.to_uppercase())
+        .position((24, 18))
+        .size((w - 48, 20))
+        .font(Some(&fonts.heading))
+        .background_color(Some(theme::PAGE))
+        .build(label)
 }
 
 fn centered(w: i32, h: i32) -> (i32, i32) {
@@ -338,7 +395,7 @@ impl Tray {
             &format!("\"{name}\" wants to pair. Type the code shown on the phone."),
             Some("RCWLP pairing request"),
             Some(nwg::TrayNotificationFlags::USER_ICON | nwg::TrayNotificationFlags::LARGE_ICON),
-            Some(&self.icon),
+            Some(&self.icon_big),
         );
     }
 

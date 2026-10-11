@@ -49,6 +49,7 @@ class ControllerActivity : Activity(), ControllerSession.Listener, InputManager.
     private lateinit var content: View
     private lateinit var lightbar: View
     private lateinit var statusText: TextView
+    private lateinit var statusLight: View
     private lateinit var controllerText: TextView
     private lateinit var inputText: TextView
     private lateinit var disconnectButton: View
@@ -82,6 +83,7 @@ class ControllerActivity : Activity(), ControllerSession.Listener, InputManager.
         content = findViewById(R.id.content)
         lightbar = findViewById(R.id.lightbar)
         statusText = findViewById(R.id.status)
+        statusLight = findViewById(R.id.status_light)
         controllerText = findViewById(R.id.controller)
         inputText = findViewById(R.id.input)
         disconnectButton = findViewById(R.id.disconnect)
@@ -152,6 +154,7 @@ class ControllerActivity : Activity(), ControllerSession.Listener, InputManager.
     private val serviceObserver: (ControllerService.Status) -> Unit = { s ->
         runOnUiThread {
             if (s.message.isNotEmpty()) statusText.text = s.message
+            statusLight.isActivated = s.active && s.connected
             controllerText.text = s.controllers.lineSequence().filter { it.isNotBlank() }.toList()
                 .takeIf { it.isNotEmpty() }
                 ?.joinToString("\n") { "Controller: $it" }
@@ -258,6 +261,7 @@ class ControllerActivity : Activity(), ControllerSession.Listener, InputManager.
     override fun onState(state: ControllerSession.State, detail: Int) = runOnUiThread {
         connected = state == ControllerSession.State.CONNECTED
         stateText = ControllerSession.describe(state, detail, host, ps4Mode)
+        statusLight.isActivated = connected
         if (!connected) lightbar.visibility = View.GONE
         showStatus()
     }

@@ -1,137 +1,233 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fitsSystemWindows="true"
-    android:orientation="vertical"
-    android:padding="16dp">
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:paddingHorizontal="16dp"
-        android:text="@string/app_name"
-        android:textSize="32sp"
-        android:textStyle="bold" />
-
-    <TextView
-        android:id="@+id/controller_label"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingHorizontal="16dp"
-        android:paddingTop="8dp"
-        android:textSize="16sp" />
+    android:fillViewport="true"
+    android:fitsSystemWindows="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:paddingHorizontal="8dp"
-        android:paddingVertical="8dp">
+        android:orientation="vertical"
+        android:padding="16dp">
 
-        <Button
-            android:id="@+id/scan_button"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/scan" />
-
-        <Button
-            android:id="@+id/add_button"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/add_by_ip" />
-    </LinearLayout>
-
-    <CheckBox
-        android:id="@+id/ps4_mode"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="8dp"
-        android:text="@string/ps4_mode" />
-
-    <TextView
-        android:id="@+id/ps4_mode_hint"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:alpha="0.6"
-        android:paddingHorizontal="16dp"
-        android:paddingBottom="8dp"
-        android:text="@string/ps4_mode_hint"
-        android:textSize="13sp" />
-
-    <CheckBox
-        android:id="@+id/background_mode"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="8dp"
-        android:text="@string/background_mode" />
-
-    <TextView
-        android:id="@+id/background_status"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:alpha="0.6"
-        android:paddingHorizontal="16dp"
-        android:textSize="13sp" />
-
-    <Button
-        android:id="@+id/shizuku_button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="8dp"
-        android:visibility="gone" />
-
-    <TextView
-        android:id="@+id/stick_deadzone_label"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingHorizontal="16dp"
-        android:paddingTop="8dp" />
-
-    <SeekBar
-        android:id="@+id/stick_deadzone"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="8dp" />
-
-    <TextView
-        android:id="@+id/trigger_deadzone_label"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingHorizontal="16dp" />
-
-    <SeekBar
-        android:id="@+id/trigger_deadzone"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="8dp"
-        android:paddingBottom="8dp" />
-
-    <TextView
-        android:id="@+id/scan_status"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:alpha="0.7"
-        android:paddingHorizontal="16dp" />
-
-    <ScrollView
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
-
+        <!-- The logo tile and wordmark, as at the top of SimonSays's sidebar. -->
         <LinearLayout
-            android:id="@+id/host_list"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical" />
-    </ScrollView>
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingTop="8dp">
 
-    <TextView
-        android:id="@+id/version"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:alpha="0.4"
-        android:paddingHorizontal="16dp"
-        android:paddingTop="8dp"
-        android:textSize="12sp" />
-</LinearLayout>
+            <ImageView
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:contentDescription="@null"
+                android:src="@drawable/logo_tile" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:fontFamily="@font/montserrat_black"
+                android:letterSpacing="-0.02"
+                android:text="@string/app_name"
+                android:textColor="#FFFFFF"
+                android:textSize="24sp" />
+        </LinearLayout>
+
+        <LinearLayout style="@style/RCWLP.Panel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <TextView style="@style/RCWLP.PanelTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:drawableStart="@drawable/ic_gamepad"
+                android:text="@string/controller" />
+
+            <TextView
+                android:id="@+id/controller_name"
+                style="@style/RCWLP.Title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" />
+
+            <TextView
+                android:id="@+id/controller_hint"
+                style="@style/RCWLP.Hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/no_controller_hint" />
+        </LinearLayout>
+
+        <LinearLayout style="@style/RCWLP.Panel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView style="@style/RCWLP.PanelTitle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:drawableStart="@drawable/ic_monitor"
+                    android:text="@string/pcs" />
+
+                <Button
+                    android:id="@+id/scan_button"
+                    style="@style/RCWLP.Button.Secondary"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:drawableStart="@drawable/ic_refresh"
+                    android:text="@string/scan" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/scan_status"
+                style="@style/RCWLP.Hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" />
+
+            <LinearLayout
+                android:id="@+id/host_list"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="vertical" />
+
+            <Button
+                android:id="@+id/add_button"
+                style="@style/RCWLP.Button.Secondary"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:drawableStart="@drawable/ic_plus"
+                android:text="@string/add_by_ip" />
+        </LinearLayout>
+
+        <LinearLayout style="@style/RCWLP.Panel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <TextView style="@style/RCWLP.PanelTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:drawableStart="@drawable/ic_settings"
+                android:text="@string/settings" />
+
+            <CheckBox
+                android:id="@+id/ps4_mode"
+                style="@style/RCWLP.Toggle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/ps4_mode" />
+
+            <TextView
+                android:id="@+id/ps4_mode_hint"
+                style="@style/RCWLP.Hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:paddingHorizontal="4dp"
+                android:text="@string/ps4_mode_hint" />
+
+            <CheckBox
+                android:id="@+id/background_mode"
+                style="@style/RCWLP.Toggle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/background_mode" />
+
+            <TextView
+                android:id="@+id/background_status"
+                style="@style/RCWLP.Hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:paddingHorizontal="4dp" />
+
+            <Button
+                android:id="@+id/shizuku_button"
+                style="@style/RCWLP.Button.Primary"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:orientation="horizontal"
+                android:paddingHorizontal="4dp">
+
+                <TextView style="@style/RCWLP.Label"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/stick_deadzone" />
+
+                <TextView
+                    android:id="@+id/stick_deadzone_value"
+                    style="@style/RCWLP.Label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/rose" />
+            </LinearLayout>
+
+            <SeekBar
+                android:id="@+id/stick_deadzone"
+                style="@style/RCWLP.Slider"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="horizontal"
+                android:paddingHorizontal="4dp">
+
+                <TextView style="@style/RCWLP.Label"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/trigger_deadzone" />
+
+                <TextView
+                    android:id="@+id/trigger_deadzone_value"
+                    style="@style/RCWLP.Label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/rose" />
+            </LinearLayout>
+
+            <SeekBar
+                android:id="@+id/trigger_deadzone"
+                style="@style/RCWLP.Slider"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/version"
+            style="@style/RCWLP.Label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="8dp"
+            android:gravity="center"
+            android:textColor="@color/zinc_600" />
+    </LinearLayout>
+</ScrollView>
