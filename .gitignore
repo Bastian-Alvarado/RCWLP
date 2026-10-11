@@ -12,5 +12,12 @@ android/.kotlin/
 *.iml
 *.apk
 
-# Installer builds
+# Release signing: never commit the key or its passwords
+android/keystore.properties
+*.jks
+*.keystore
+*.p12
+
+# Installer and release builds
 installer/output/
+dist/

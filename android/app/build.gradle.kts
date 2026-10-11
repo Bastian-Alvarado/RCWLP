@@ -1,3 +1,5 @@
+import java.util.Properties
+
 // AGP 9 compiles Kotlin itself, so no separate Kotlin plugin is applied.
 plugins {
     id("com.android.application")
@@ -5,6 +7,12 @@ plugins {
 
 // Wire-format test vectors shared with the PC host, at the repo root.
 val protocolVectors = rootProject.file("../protocol-vectors.txt")
+
+// Release signing key, named in android/keystore.properties (kept out of git). Without that
+// file, release builds come out unsigned.
+val signing = rootProject.file("keystore.properties").takeIf { it.exists() }?.let { file ->
+    Properties().apply { file.inputStream().use { load(it) } }
+}
 
 
 android {
@@ -37,9 +45,21 @@ android {
         }
     }
 
+    signingConfigs {
+        if (signing != null) {
+            create("release") {
+                storeFile = file(signing.getProperty("storeFile"))
+                storePassword = signing.getProperty("storePassword")
+                keyAlias = signing.getProperty("keyAlias")
+                keyPassword = signing.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

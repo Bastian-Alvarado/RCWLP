@@ -71,7 +71,11 @@ can't connect, run with `--verbose`: the host then logs every packet it ignores 
 
 ## Phone setup
 
-Build the app with Android Studio (open the `android/` folder), or from a terminal:
+Install `RCWLP-<version>.apk` on the phone: open it from your browser's downloads or a file
+manager, and allow installing from that app when Android asks. It needs Android 8.0 or
+newer.
+
+To build it yourself, use Android Studio (open the `android/` folder) or a terminal:
 
 ```bash
 cd android
@@ -79,11 +83,12 @@ cd android
 ```
 
 Then install `android/app/build/outputs/apk/debug/app-debug.apk`, for example with
-`adb install`. It needs Android 8.0 or newer.
+`adb install`. A build you make and the published APK are signed with different keys, so
+to switch from one to the other, uninstall the app first (and pair again).
 
 ## Using it
 
-1. Run `rcwlp-host` on the PC.
+1. Start the host on the PC, if its icon isn't in the notification area already.
 2. Open RCWLP on the phone. The PC appears in the list (or use **Add PC by IP**).
 3. Tap it. The phone shows a 6-digit code; type it in the PC window. If you cancel and
    tap again, the phone shows a new code, and the PC takes that one instead.
@@ -180,3 +185,35 @@ buttons. Two things help:
   installer script is `installer/rcwlp-host.iss`.
 - Turn on the pre-commit hook once per clone with `git config core.hooksPath .githooks`. It
   runs whichever of the two test suites the staged files affect.
+
+### Making a release
+
+`release.ps1` builds the PC installer and the signed phone app and puts them in `dist/`
+with their SHA-256 checksums, ready to attach to a GitHub release:
+
+```bash
+powershell -ExecutionPolicy Bypass -File release.ps1
+```
+
+It needs Rust, Inno Setup 6, JDK 17 or newer in `JAVA_HOME`, and the release signing key.
+The key isn't in the repository: `android/keystore.properties` (git-ignored) names the
+keystore file and its passwords:
+
+```
+storeFile=C:/Users/you/.android/rcwlp-release.jks
+storePassword=...
+keyAlias=rcwlp
+keyPassword=...
+```
+
+Keep a backup of both. Android only installs an update over an app signed with the same
+key, so without it, people would have to uninstall and pair again to update. Raise
+`versionCode` and `versionName` in `android/app/build.gradle.kts` and `version` in
+`host/Cargo.toml` for each release.
+
+## License
+
+Source available under the Apache License 2.0 with the **Commons Clause** (see
+[LICENSE](LICENSE)). In plain words: use it, change it and share it freely, as long as the
+license goes with it; but don't sell it, or sell a product, hosting, setup or support whose
+value is mainly RCWLP itself. `host/vendor/vigem-client` keeps its own MIT license.
