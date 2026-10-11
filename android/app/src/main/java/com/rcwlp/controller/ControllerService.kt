@@ -13,6 +13,8 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
@@ -34,6 +36,15 @@ class ControllerService : Service(), ControllerSession.Listener {
     )
 
     private lateinit var store: HostStore
+    private val handler = Handler(Looper.getMainLooper())
+    @Volatile private var stateText = ""
+    @Volatile private var connected = false
+    private val refreshStatus = object : Runnable {
+        override fun run() {
+            publishState()
+            handler.postDelayed(this, STATUS_REFRESH_MS)
+        }
+    }
     /** Rumble per controller slot; only slot 0 may buzz the phone itself. */
     private val rumblers = java.util.concurrent.ConcurrentHashMap<Int, Rumbler>()
     private var host: PairedHost? = null
@@ -139,9 +150,12 @@ class ControllerService : Service(), ControllerSession.Listener {
         session = s
         if (ps4Mode) motion = MotionSource(this, orientFromGravity = true) { s.update(it) }.also { it.start() }
         bindReader()
+        handler.post(refreshStatus)
     }
 
     private fun teardown() {
+        handler.removeCallbacks(refreshStatus)
+        connected = false
         if (readerBound) {
             // remove = true makes Shizuku call EvdevService.destroy(), ending its process and the grab.
             runCatching { Shizuku.unbindUserService(readerArgs, readerConnection, true) }
@@ -184,8 +198,16 @@ class ControllerService : Service(), ControllerSession.Listener {
     override fun onState(state: ControllerSession.State, detail: Int) {
         val target = host ?: return
         val message = ControllerSession.describe(state, detail, target, ps4Mode)
-        publish(status.copy(message = message))
+        stateText = message
+        connected = state == ControllerSession.State.CONNECTED
+        publishState()
         if (state == ControllerSession.State.NOT_PAIRED) fail(message) else host?.let { enterForeground(it.name, message) }
+    }
+
+    /** The in-app status, with the round trip while connected. The notification keeps the plain state. */
+    private fun publishState() {
+        val latency = session?.latencyMs?.takeIf { connected }
+        publish(status.copy(message = if (latency != null) "$stateText · $latency ms" else stateText))
     }
 
     override fun onFeedback(pads: List<Feedback>) {
@@ -266,6 +288,7 @@ class ControllerService : Service(), ControllerSession.Listener {
         private const val CHANNEL = "controller"
         private const val NOTIFICATION_ID = 1
         private const val ERROR_NOTIFICATION_ID = 2
+        private const val STATUS_REFRESH_MS = 1_000L
 
         @Volatile
         var status = Status()

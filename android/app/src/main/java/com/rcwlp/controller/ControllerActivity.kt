@@ -70,6 +70,14 @@ class ControllerActivity : Activity(), ControllerSession.Listener, InputManager.
             finish()
             return
         }
+        // Use the whole screen, the hidden navigation bar's strip and the camera cutout included,
+        // so the touchpad and the lightbar tint reach every edge.
+        if (Build.VERSION.SDK_INT >= 30) window.setDecorFitsSystemWindows(false)
+        if (Build.VERSION.SDK_INT >= 28) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         setContentView(R.layout.activity_controller)
         content = findViewById(R.id.content)
         lightbar = findViewById(R.id.lightbar)
