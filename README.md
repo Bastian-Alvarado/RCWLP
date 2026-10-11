@@ -25,20 +25,34 @@ back the other way. The phone screen stays black and dims itself to save battery
 
 1. Install the [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases), if it
    isn't installed already. Sunshine installs it too.
-2. Build and run the host, either in the system tray or in a console window:
+2. Run the installer, `RCWLP-host-setup-<version>.exe`. It installs for your Windows user
+   only, needs no admin rights, and starts the host in the notification area, now and
+   whenever you sign in (untick that in the installer, or later in the tray menu). If the
+   driver is missing, it offers to open the driver's download page. To build the installer
+   yourself, install Rust and [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+   (`winget install JRSoftware.InnoSetup`), then:
    ```bash
-   cd host
-   cargo run --release --bin rcwlp-tray
+   powershell -ExecutionPolicy Bypass -File installer/build.ps1
    ```
-   ```bash
-   cargo run --release --bin rcwlp-host
-   ```
-   Both are the same host. The tray app sits in the notification area: when a phone asks
-   to pair, a small window asks for the code; left-click the icon for the log (where the
-   console commands below also work); right-click for *Start with Windows* and *Quit*.
-   The built programs are in `host/target/release/`.
+   It lands in `installer/output/`. Uninstalling (Settings → Apps) asks whether to forget
+   the paired phones too; by default they're kept for a later reinstall.
 3. The first time, Windows Firewall asks about network access. Allow it on **private**
    networks. Without that, the phone can't find the PC.
+
+The tray app sits in the notification area: when a phone asks to pair, a small window asks
+for the code; left-click the icon for the log (where the console commands below also work);
+right-click for *Start with Windows* and *Quit*. Only one copy runs at a time.
+
+The same host also runs in a console window, `rcwlp-host.exe` in the install folder
+(`%LOCALAPPDATA%\Programs\RCWLP`). Quit the tray first, since both use the same port. To run
+either straight from the source instead:
+```bash
+cd host
+cargo run --release --bin rcwlp-tray
+```
+```bash
+cargo run --release --bin rcwlp-host
+```
 
 Host commands, typed in the console window (or the tray app's log window):
 
@@ -161,5 +175,8 @@ buttons. Two things help:
 - `cargo run --example ds4_watch` reads the virtual DualShock 4 the way a game does and prints
   its buttons, sticks, touchpad and battery (`--motion` adds gyro and accelerometer); `--feedback R G B LARGE SMALL` sends a lightbar colour and
   rumble like a game, to check they reach the phone.
+- The host's icon is drawn by `host/assets/make-icons.ps1`, which writes `tray.png` and
+  `rcwlp.ico`; `host/build.rs` embeds the `.ico` and version info in the programs. The
+  installer script is `installer/rcwlp-host.iss`.
 - Turn on the pre-commit hook once per clone with `git config core.hooksPath .githooks`. It
   runs whichever of the two test suites the staged files affect.

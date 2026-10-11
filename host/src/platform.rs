@@ -48,22 +48,53 @@ impl Platform for WindowsPlatform {
     }
 }
 
+/// Where to get the ViGEmBus driver the host needs.
+pub const DRIVER_URL: &str = "https://github.com/nefarius/ViGEmBus/releases";
+
+/// Why the host couldn't start.
+#[derive(Debug)]
+pub enum StartError {
+    /// The ViGEmBus driver isn't installed, or can't be reached.
+    NoDriver(String),
+    /// Something else has the UDP port, most likely another RCWLP host.
+    PortInUse(u16),
+    Other(String),
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StartError::NoDriver(e) => write!(
+                f,
+                "RCWLP needs the ViGEmBus driver to create virtual controllers, and can't reach it ({e}). \
+                 Install it from {DRIVER_URL}, then start RCWLP again."
+            ),
+            StartError::PortInUse(port) => write!(
+                f,
+                "UDP port {port} is already in use. Is RCWLP already running? Look for its icon in the \
+                 notification area, or close the other host window."
+            ),
+            StartError::Other(e) => f.write_str(e),
+        }
+    }
+}
+
 /// Runs a host until a "quit" arrives on `commands`. Each line on `commands` is handled like
 /// one typed into the console; everything the host has to say goes to `out`.
-pub fn run(config: Config, mut out: OutFn, commands: Receiver<String>) -> Result<(), String> {
-    pad::check_driver().map_err(|e| {
-        format!(
-            "Cannot reach the ViGEmBus driver ({e}). \
-             Install it from https://github.com/nefarius/ViGEmBus/releases and try again."
-        )
-    })?;
+pub fn run(config: Config, mut out: OutFn, commands: Receiver<String>) -> Result<(), StartError> {
+    pad::check_driver().map_err(|e| StartError::NoDriver(e.to_string()))?;
     let port = config.port;
-    let socket = UdpSocket::bind(("0.0.0.0", port)).map_err(|e| format!("Cannot listen on UDP port {port}: {e}"))?;
-    socket.set_read_timeout(Some(TICK)).map_err(|e| e.to_string())?;
-    let receiver = socket.try_clone().map_err(|e| e.to_string())?;
+    let socket = UdpSocket::bind(("0.0.0.0", port)).map_err(|e| match e.kind() {
+        // Windows reports a port held by another program as "access denied".
+        io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied => StartError::PortInUse(port),
+        _ => StartError::Other(format!("Cannot listen on UDP port {port}: {e}")),
+    })?;
+    let other = |e: io::Error| StartError::Other(e.to_string());
+    socket.set_read_timeout(Some(TICK)).map_err(other)?;
+    let receiver = socket.try_clone().map_err(other)?;
     let waker = UdpSocket::bind(("127.0.0.1", 0))
         .and_then(|w| w.connect(("127.0.0.1", port)).map(|()| w))
-        .map_err(|e| format!("Cannot create the loopback socket: {e}"))?;
+        .map_err(|e| StartError::Other(format!("Cannot create the loopback socket: {e}")))?;
 
     let host_name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into());
     let store = Store::load();

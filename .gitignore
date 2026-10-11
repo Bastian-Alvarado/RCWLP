@@ -11,3 +11,6 @@ android/.idea/
 android/.kotlin/
 *.iml
 *.apk
+
+# Installer builds
+installer/output/

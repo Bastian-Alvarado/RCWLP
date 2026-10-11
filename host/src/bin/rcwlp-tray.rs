@@ -21,7 +21,7 @@ const ICON: &[u8] = include_bytes!("../../assets/tray.png");
 #[derive(Default)]
 struct Inbox {
     out: Vec<Out>,
-    finished: Option<Result<(), String>>,
+    finished: Option<Result<(), platform::StartError>>,
 }
 
 struct Tray {
@@ -53,6 +53,17 @@ struct Tray {
 fn main() {
     nwg::init().expect("start the Windows UI");
     let _ = nwg::Font::set_global_family("Segoe UI");
+    // Starting it from the Start Menu while it already runs at sign-in shouldn't start a second one.
+    let Some(_instance) = SingleInstance::claim() else {
+        nwg::message(&nwg::MessageParams {
+            title: "RCWLP host",
+            content: "RCWLP host is already running. Its icon is in the notification area, next to the clock \
+                      (it may be behind the ^ arrow).",
+            buttons: nwg::MessageButtons::Ok,
+            icons: nwg::MessageIcons::Info,
+        });
+        return;
+    };
     let verbose = std::env::args().any(|a| a == "--verbose" || a == "-v");
     let port = port_arg().unwrap_or(protocol::DEFAULT_PORT);
 
@@ -88,6 +99,51 @@ fn main() {
         .collect();
     nwg::dispatch_thread_events();
     handlers.iter().for_each(nwg::unbind_event_handler);
+}
+
+/// A named mutex held while this tray app runs, so a second copy can tell.
+struct SingleInstance(winapi::shared::ntdef::HANDLE);
+
+impl SingleInstance {
+    fn claim() -> Option<SingleInstance> {
+        use winapi::shared::winerror::ERROR_ALREADY_EXISTS;
+        use winapi::um::errhandlingapi::GetLastError;
+        use winapi::um::synchapi::CreateMutexW;
+        let name: Vec<u16> = "Local\\RCWLP-host-tray".encode_utf16().chain(Some(0)).collect();
+        // Safety: plain Win32 calls; the handle is closed in Drop.
+        unsafe {
+            let handle = CreateMutexW(std::ptr::null_mut(), 0, name.as_ptr());
+            if handle.is_null() {
+                return Some(SingleInstance(handle)); // Can't tell; let the port check catch a duplicate.
+            }
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                winapi::um::handleapi::CloseHandle(handle);
+                return None;
+            }
+            Some(SingleInstance(handle))
+        }
+    }
+}
+
+impl Drop for SingleInstance {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // Safety: the handle came from CreateMutexW.
+            unsafe { winapi::um::handleapi::CloseHandle(self.0) };
+        }
+    }
+}
+
+/// Opens a web page in the default browser.
+fn open_url(url: &str) {
+    use winapi::um::shellapi::ShellExecuteW;
+    use winapi::um::winuser::SW_SHOWNORMAL;
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let (open, url) = (wide("open"), wide(url));
+    // Safety: plain Win32 call with NUL-terminated strings.
+    unsafe {
+        ShellExecuteW(std::ptr::null_mut(), open.as_ptr(), url.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL);
+    }
 }
 
 fn port_arg() -> Option<u16> {
@@ -249,9 +305,24 @@ impl Tray {
             }
         }
         if let Some(result) = finished {
-            if let Err(e) = result {
-                nwg::modal_error_message(&self.owner, "RCWLP host", &e);
+            match result {
+                Ok(()) => {}
+                Err(e @ platform::StartError::NoDriver(_)) => {
+                    let choice = nwg::message(&nwg::MessageParams {
+                        title: "RCWLP host",
+                        content: &format!("{e}\n\nOpen the ViGEmBus download page now?"),
+                        buttons: nwg::MessageButtons::YesNo,
+                        icons: nwg::MessageIcons::Warning,
+                    });
+                    if choice == nwg::MessageChoice::Yes {
+                        open_url(platform::DRIVER_URL);
+                    }
+                }
+                Err(e) => {
+                    nwg::modal_error_message(&self.owner, "RCWLP host", &e.to_string());
+                }
             }
+            self.tray.set_visibility(false);
             nwg::stop_thread_dispatch();
         }
     }
