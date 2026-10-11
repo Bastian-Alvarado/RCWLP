@@ -8,6 +8,8 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.annotation.Keep
 import java.io.File
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -35,6 +37,8 @@ class EvdevService() : IEvdevService.Stub() {
     /** The last state sent per slot. Guarded by [lock], like [slots]. */
     private val lastSent = HashMap<Int, PadState>()
     private val slots = SlotAssigner<String>()
+    /** Set while this process sends INPUT itself (Xbox mode); see [ReaderStream]. */
+    @Volatile private var stream: ReaderStream? = null
     private val rescan = ArrayBlockingQueue<Unit>(1)
     /** Built-in gamepad-like devices already logged as skipped. Scan thread only. */
     private val skipped = HashSet<String>()
@@ -51,6 +55,43 @@ class EvdevService() : IEvdevService.Stub() {
         running = false
         exitProcess(0)
     }
+
+    override fun startStreaming(
+        sessionKey: ByteArray, clientId: ByteArray, hostIp: String, hostPort: Int, firstSeq: Int,
+        stickDeadzone: Int, triggerDeadzone: Int,
+    ): Boolean = runCatching {
+        stopStreaming()
+        val tuning = Tuning(stickDeadzone / 100f, triggerDeadzone / 100f)
+        val s = ReaderStream(sessionKey, clientId, InetSocketAddress(InetAddress.getByName(hostIp), hostPort), firstSeq, tuning) { status, rtt ->
+            val feedback = status.pads.flatMap { listOf(it.slot, it.large, it.small, it.player, it.lightbar) }.toIntArray()
+            callback?.onStatus(feedback, rtt)
+        }
+        synchronized(lock) {
+            for ((slot, state) in lastSent) s.update(slot, state)
+            stream = s
+        }
+        s.start()
+        Log.i(TAG, "Sending input to $hostIp:$hostPort from this process")
+        true
+    }.getOrElse {
+        Log.w(TAG, "Couldn't start sending input", it)
+        false
+    }
+
+    override fun stopStreaming(): Int {
+        val s = synchronized(lock) { stream.also { stream = null } } ?: return -1
+        val last = s.stop()
+        // The app sends again from here on, and stopped hearing about states while we streamed.
+        synchronized(lock) { lastSent.clear() }
+        report()
+        return last
+    }
+
+    override fun setBattery(battery: Int) {
+        stream?.battery = battery
+    }
+
+    override fun msSinceStatus(): Long = stream?.msSinceStatus ?: -1
 
     override fun start(callback: IEvdevCallback) {
         this.callback = callback
@@ -175,6 +216,13 @@ class EvdevService() : IEvdevService.Stub() {
                     changed += slot to merged
                 }
             }
+        }
+        val s = stream
+        if (s != null) {
+            // This process sends the input; the app only needs to know about detached controllers.
+            removed.forEach(s::remove)
+            changed.forEach { (slot, state) -> s.update(slot, state) }
+            changed.clear()
         }
         try {
             removed.forEach { callback?.onRemoved(it) }

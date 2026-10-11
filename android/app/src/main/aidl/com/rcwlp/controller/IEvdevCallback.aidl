@@ -10,4 +10,10 @@ oneway interface IEvdevCallback {
 
     /** Names of the controllers currently being read, one per line as "slot:name"; empty when none. */
     void onDevices(String names);
+
+    /**
+     * While streaming: a verified STATUS from the host, as (slot, large motor, small motor,
+     * player, 0xRRGGBB lightbar) per controller, and the round trip in ms, or -1 if not known yet.
+     */
+    void onStatus(in int[] feedback, int rttMs);
 }

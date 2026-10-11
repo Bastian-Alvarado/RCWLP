@@ -107,6 +107,22 @@ uses a small C module (`android/app/src/main/cpp/evdev.c`) to open and grab cont
 It maps them with the same key-layout (`.kl`) files Android uses, so buttons match
 foreground mode. If the app stops, the process exits and the phone gets the controller back.
 
+**Screen off, and phones that freeze apps.** Some phones' power managers freeze apps
+while the screen is off, foreground service or not. Honor's, for example, freezes RCWLP for
+a quarter second every three seconds, which shows up as hiccups and missed or stuck
+buttons. Two things help:
+
+- In Xbox mode the reader process sends the input to the PC itself. It runs as the shell
+  user, which those power managers leave alone, so input keeps flowing even while the app
+  is frozen; the app only connects and handles rumble. It also repeats each change and
+  holds very short taps for 20 ms, so a lost Wi-Fi packet or a game that checks the
+  controller once a frame doesn't miss them. (PS4 mode still sends from the app, which
+  reads the motion sensors.)
+- Exempt RCWLP from the phone's power management. On Honor and Huawei: Settings →
+  Battery → App launch → RCWLP → Manage manually, with all three switches on. Other
+  makers have similar settings (Xiaomi: battery saver "No restrictions"; Samsung: "Never
+  sleeping apps").
+
 ## Notes and limits
 
 - **Without background mode the app must stay on screen.** The screen dims to almost

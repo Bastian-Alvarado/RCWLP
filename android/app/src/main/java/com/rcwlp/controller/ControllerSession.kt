@@ -33,7 +33,24 @@ class ControllerSession(
     private val listener: Listener,
     /** The phone's battery in INPUT's encoding; called every few seconds on the network thread. */
     private val battery: () -> Int = { Proto.BATTERY_UNKNOWN },
+    /** Something that can send INPUT for this session instead, like the background-mode reader. */
+    private val delegate: InputDelegate? = null,
 ) {
+    /**
+     * Sends INPUT on the session's behalf once it's connected. It also receives the host's
+     * STATUS, since the host answers wherever input comes from, and passes it to [onDelegatedStatus].
+     * Called on the session's network thread.
+     */
+    interface InputDelegate {
+        /** Takes over sending, starting after [firstSeq]. False if it can't; the session then sends itself. */
+        fun start(sessionKey: ByteArray, host: InetSocketAddress, firstSeq: Int): Boolean
+        /** Stops sending and returns the last seq it sent, or -1 if unknown. */
+        fun stop(): Int
+        fun setBattery(battery: Int)
+        /** How long since the delegate last got a STATUS, or -1 if unknown. */
+        fun msSinceStatus(): Long
+    }
+
     enum class State {
         CONNECTING,
         /** Still trying, but the host hasn't answered for a few seconds. */
@@ -84,8 +101,9 @@ class ControllerSession(
 
     // Receiver thread only.
     private var lastStatusSeq = 0L
-    private var reportedPlayer = -1
     private var reportedWrongVersion = false
+    // Receiver thread, or the delegate's callbacks; guarded by onStatusFeedback.
+    private var reportedPlayer = -1
 
     // Sender thread only.
     private var seq = 0
@@ -191,13 +209,38 @@ class ControllerSession(
         lastStatusAt = SystemClock.elapsedRealtime()
         var batteryLevel = Proto.BATTERY_UNKNOWN
         var batteryReadAt = 0L
+        var delegated = false
+        var tryDelegateAt = 0L
+        try {
         while (running) {
-            seq++
             val now = SystemClock.elapsedRealtime()
             if (now - batteryReadAt > BATTERY_EVERY_MS) {
                 batteryLevel = runCatching(battery).getOrDefault(Proto.BATTERY_UNKNOWN)
                 batteryReadAt = now
+                if (delegated) runCatching { delegate?.setBattery(batteryLevel) }
             }
+            val d = delegate
+            if (!delegated && d != null && now >= tryDelegateAt) {
+                // The delegate may not be ready yet (the reader binds asynchronously); keep trying.
+                tryDelegateAt = now + DELEGATE_RETRY_MS
+                delegated = runCatching { d.start(key, target, seq) }.getOrDefault(false)
+                if (delegated) runCatching { d.setBattery(batteryLevel) }
+            }
+            if (delegated) {
+                // The delegate sends; this thread only watches for the host going quiet. Ask the
+                // delegate before giving up: its STATUS reports may simply be queued while this
+                // app was frozen.
+                if (now - lastStatusAt > LOST_AFTER_MS &&
+                    runCatching { d?.msSinceStatus() ?: -1 }.getOrDefault(-1).let { it < 0 || it > LOST_AFTER_MS }
+                ) {
+                    latencyMs = null
+                    listener.onFeedback(emptyList())
+                    return // Host went quiet: start a fresh session.
+                }
+                wake.poll(HEARTBEAT_MS, TimeUnit.MILLISECONDS)
+                continue
+            }
+            seq++
             val reports = pads.toSortedMap().map { (slot, state) ->
                 if (slot == 0) PadReport(0, state, motion, touch) else PadReport(slot, state)
             }
@@ -219,6 +262,35 @@ class ControllerSession(
             val wait = MIN_INTERVAL_MS - (SystemClock.elapsedRealtime() - sentTime)
             if (wait > 0) Thread.sleep(wait)
         }
+        } finally {
+            if (delegated) {
+                // DISCONNECT must come after the delegate's last INPUT. If it can't say which
+                // that was (the reader is already gone), jump far enough ahead to be sure.
+                val last = runCatching { delegate?.stop() ?: -1 }.getOrDefault(-1)
+                seq = if (last >= seq) last else Int.MAX_VALUE - 1
+            }
+        }
+    }
+
+    /**
+     * A STATUS the [delegate] received and verified, with its round trip in ms (-1 if unknown).
+     * Handled like one this session received itself.
+     */
+    fun onDelegatedStatus(pads: List<Feedback>, rttMs: Int) {
+        lastStatusAt = SystemClock.elapsedRealtime()
+        if (rttMs >= 0) latencyMs = rttMs
+        onStatusFeedback(pads)
+    }
+
+    /** Player changes and feedback from a STATUS, whoever received it. */
+    @Synchronized
+    private fun onStatusFeedback(pads: List<Feedback>) {
+        val player = pads.firstOrNull { it.slot == 0 }?.player ?: 0
+        if (player != reportedPlayer) {
+            reportedPlayer = player
+            listener.onState(State.CONNECTED, player)
+        }
+        listener.onFeedback(pads)
     }
 
     private fun sendDisconnect() {
@@ -297,12 +369,7 @@ class ControllerSession(
                 val now = SystemClock.elapsedRealtime()
                 lastStatusAt = now
                 measureLatency(status, now)
-                val player = status.pads.firstOrNull { it.slot == 0 }?.player ?: 0
-                if (player != reportedPlayer) {
-                    reportedPlayer = player
-                    listener.onState(State.CONNECTED, player)
-                }
-                listener.onFeedback(status.pads)
+                onStatusFeedback(status.pads)
             }
         }
     }
@@ -355,5 +422,7 @@ class ControllerSession(
         private const val BATTERY_EVERY_MS = 5000L
         /** Remembered send times; a power of two, and far more than are ever in flight. */
         private const val LATENCY_SLOTS = 256
+        /** How often to retry handing input to the delegate until it accepts. */
+        private const val DELEGATE_RETRY_MS = 1000L
     }
 }

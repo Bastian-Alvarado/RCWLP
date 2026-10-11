@@ -52,6 +52,8 @@ class ControllerService : Service(), ControllerSession.Listener {
     private var motion: MotionSource? = null
     private var ps4Mode = false
     private var readerBound = false
+    /** The reader once Shizuku has started it. */
+    @Volatile private var reader: IEvdevService? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLocks: List<WifiManager.WifiLock> = emptyList()
 
@@ -86,6 +88,13 @@ class ControllerService : Service(), ControllerSession.Listener {
             }
             publish(status.copy(controllers = lines.joinToString("\n") { it.substringAfter(':') }))
         }
+
+        override fun onStatus(feedback: IntArray, rttMs: Int) {
+            val pads = feedback.toList().chunked(5).filter { it.size == 5 }.map { (slot, large, small, player, lightbar) ->
+                Feedback(slot, large, small, player, lightbar)
+            }
+            session?.onDelegatedStatus(pads, rttMs)
+        }
     }
 
     private val readerConnection = object : ServiceConnection {
@@ -95,12 +104,36 @@ class ControllerService : Service(), ControllerSession.Listener {
                 fail("Couldn't start the controller reader through Shizuku.")
                 return
             }
-            runCatching { reader.start(readerCallback) }.onFailure { fail("Controller reader failed: ${it.message}") }
+            runCatching { reader.start(readerCallback) }
+                .onSuccess { this@ControllerService.reader = reader }
+                .onFailure { fail("Controller reader failed: ${it.message}") }
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
+            reader = null
             if (session != null) fail("The controller reader stopped. Is Shizuku still running?")
         }
+    }
+
+    /**
+     * Xbox mode: the reader sends input itself. It runs as the shell user, which power managers
+     * don't freeze with the screen off the way they freeze this app. PS4 mode keeps sending from
+     * here, since the motion sensors are read here.
+     */
+    private val readerSends = object : ControllerSession.InputDelegate {
+        override fun start(sessionKey: ByteArray, host: java.net.InetSocketAddress, firstSeq: Int): Boolean {
+            val r = reader ?: return false
+            val ip = host.address.hostAddress ?: return false
+            return r.startStreaming(sessionKey, store.clientId, ip, host.port, firstSeq, store.stickDeadzone, store.triggerDeadzone)
+        }
+
+        override fun stop(): Int = reader?.stopStreaming() ?: -1
+
+        override fun setBattery(battery: Int) {
+            reader?.setBattery(battery)
+        }
+
+        override fun msSinceStatus(): Long = reader?.msSinceStatus() ?: -1
     }
 
     private val shizukuDied = Shizuku.OnBinderDeadListener {
@@ -146,7 +179,8 @@ class ControllerService : Service(), ControllerSession.Listener {
         val padType = if (ps4Mode) Proto.PAD_DUALSHOCK4 else Proto.PAD_XBOX360
         // Slot 0 can always fall back to the phone's own vibration, even before a controller appears.
         rumblers[0] = Rumbler(this)
-        val s = ControllerSession(store, target, padType, this, { batteryLevel(this) }).also { it.start() }
+        val delegate = if (ps4Mode) null else readerSends
+        val s = ControllerSession(store, target, padType, this, { batteryLevel(this) }, delegate).also { it.start() }
         session = s
         if (ps4Mode) motion = MotionSource(this, orientFromGravity = true) { s.update(it) }.also { it.start() }
         bindReader()
@@ -162,6 +196,8 @@ class ControllerService : Service(), ControllerSession.Listener {
             runCatching { Shizuku.removeBinderDeadListener(shizukuDied) }
             readerBound = false
         }
+        // The session's DISCONNECT then can't ask the reader for its last seq, and jumps ahead instead.
+        reader = null
         motion?.stop()
         motion = null
         session?.stop()
