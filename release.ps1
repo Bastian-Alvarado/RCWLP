@@ -11,6 +11,15 @@ $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $dist = Join-Path $root "dist"
 
+# Runs a program and shows its output. Only its exit code decides failure: when output is
+# redirected, Windows PowerShell would otherwise stop at the first line a program writes to
+# stderr, as Gradle does.
+function Invoke-Program([scriptblock]$Command, [string]$Failure) {
+    $ErrorActionPreference = "Continue"
+    & $Command 2>&1 | ForEach-Object { "$_" } | Out-Host
+    if ($LASTEXITCODE) { throw $Failure }
+}
+
 if (-not (Test-Path (Join-Path $root "android\keystore.properties"))) {
     throw "android\keystore.properties is missing, so the app can't be signed. See ""Making a release"" in the README."
 }
@@ -20,8 +29,7 @@ $hostVersion = (Select-String -Path (Join-Path $root "host\Cargo.toml") -Pattern
 
 Push-Location (Join-Path $root "android")
 try {
-    .\gradlew.bat --console=plain assembleRelease
-    if ($LASTEXITCODE) { throw "Gradle build failed" }
+    Invoke-Program { .\gradlew.bat --console=plain assembleRelease } "Gradle build failed"
 } finally {
     Pop-Location
 }
